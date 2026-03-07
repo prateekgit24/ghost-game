@@ -1211,7 +1211,8 @@
                                 id="stat-gate-hp">100</span>/<span id="stat-gate-max">100</span></span>
                     </div>
                     <div style="font-family:'Orbitron',monospace;font-size:10px;color:var(--muted);margin-top:4px;">ATK:
-                        <span id="stat-attack" style="color:#f87171;">0</span>/s</div>
+                        <span id="stat-attack" style="color:#f87171;">0</span>/s
+                    </div>
                 </div>
             </div>
             <div style="flex:1;display:flex;justify-content:center;align-items:center;pointer-events:none;">
@@ -1323,7 +1324,12 @@
         window.addEventListener('resize', () => { W = window.innerWidth; H = window.innerHeight; canvas.width = W; canvas.height = H; });
 
         // ── SOCKET ───────────────────────────────────────────────────────
-        const socket = io();
+        // const socket = io();
+        // above one is for local host
+        // Replace the URL with your actual Render Backend URL (ends in .onrender.com)
+        const socket = io("https://ghost-game-g417.onrender.com", {
+            transports: ["websocket"] // High performance for games
+        });
 
         // ── LOCAL STATE ──────────────────────────────────────────────────
         let myId = null, myName = '', myRoomId = '', isHost = false;
