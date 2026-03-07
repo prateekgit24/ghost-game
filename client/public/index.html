@@ -1,0 +1,2414 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Ghost Killer — Multiplayer</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;600;700&display=swap"
+        rel="stylesheet">
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg: #060b14;
+            --surface: rgba(10, 15, 30, 0.97);
+            --border: rgba(100, 130, 200, 0.25);
+            --text: #e2e8f0;
+            --muted: rgba(150, 170, 220, 0.7);
+            --accent: #3b82f6;
+            --red: #ef4444;
+            --green: #22c55e;
+            --yellow: #fbbf24;
+            --cyan: #22d3ee;
+            --purple: #a855f7;
+        }
+
+        body {
+            overflow: hidden;
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Rajdhani', sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        /* ─── SCREENS ─────────────────────────────────────────── */
+        .screen {
+            position: absolute;
+            inset: 0;
+            z-index: 50;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(ellipse at 50% 30%, rgba(15, 20, 50, 0.98), rgba(0, 0, 0, 0.99));
+        }
+
+        .screen.hidden {
+            display: none;
+        }
+
+        .card {
+            background: linear-gradient(135deg, rgba(10, 16, 40, 0.98), rgba(5, 8, 22, 0.98));
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 36px;
+            max-width: 460px;
+            width: calc(100% - 32px);
+            box-shadow: 0 0 80px rgba(59, 130, 246, 0.1);
+        }
+
+        .logo {
+            font-family: 'Orbitron', monospace;
+            font-size: 40px;
+            font-weight: 900;
+            background: linear-gradient(135deg, #ef4444, #a855f7, #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: 4px;
+            line-height: 1;
+            margin-bottom: 4px;
+            text-align: center;
+        }
+
+        .logo-sub {
+            font-family: 'Orbitron', monospace;
+            font-size: 10px;
+            letter-spacing: 5px;
+            color: var(--muted);
+            text-align: center;
+            margin-bottom: 28px;
+        }
+
+        .field {
+            margin-bottom: 14px;
+        }
+
+        .field label {
+            display: block;
+            font-family: 'Orbitron', monospace;
+            font-size: 10px;
+            letter-spacing: 2px;
+            color: var(--muted);
+            margin-bottom: 6px;
+        }
+
+        .field input {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(100, 130, 200, 0.3);
+            border-radius: 8px;
+            padding: 12px 14px;
+            color: var(--text);
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 16px;
+            font-weight: 600;
+            outline: none;
+            transition: border .2s;
+        }
+
+        .field input:focus {
+            border-color: var(--accent);
+        }
+
+        .field input::placeholder {
+            color: rgba(150, 170, 220, 0.3);
+        }
+
+        .btn {
+            width: 100%;
+            border: none;
+            border-radius: 10px;
+            padding: 14px;
+            font-family: 'Orbitron', monospace;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            cursor: pointer;
+            transition: all .2s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #16a34a, #15803d);
+            color: #fff;
+            border: 1px solid #22c55e;
+            box-shadow: 0 0 20px rgba(34, 197, 94, 0.2);
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 0 35px rgba(34, 197, 94, 0.4);
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(99, 102, 241, 0.2));
+            color: var(--accent);
+            border: 1px solid rgba(59, 130, 246, 0.4);
+            margin-top: 10px;
+        }
+
+        .btn-secondary:hover {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.3), rgba(99, 102, 241, 0.3));
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(185, 28, 28, 0.2));
+            color: var(--red);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            margin-top: 10px;
+        }
+
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none !important;
+            box-shadow: none !important;
+        }
+
+        .divider {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin: 18px 0;
+            color: var(--muted);
+            font-size: 12px;
+            letter-spacing: 2px;
+            font-family: 'Orbitron', monospace;
+        }
+
+        .divider::before,
+        .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--border), transparent);
+        }
+
+        .error-msg {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: #fca5a5;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 14px;
+            display: none;
+        }
+
+        /* ─── LOBBY ─────────────────────────────────────────────── */
+        #lobby-screen .card {
+            max-width: 560px;
+        }
+
+        .lobby-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .room-id-badge {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(100, 130, 200, 0.3);
+            border-radius: 8px;
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .room-id-badge .label {
+            font-family: 'Orbitron', monospace;
+            font-size: 9px;
+            letter-spacing: 2px;
+            color: var(--muted);
+        }
+
+        .room-id-badge .value {
+            font-family: 'Orbitron', monospace;
+            font-size: 22px;
+            font-weight: 900;
+            color: #fbbf24;
+            letter-spacing: 4px;
+        }
+
+        .copy-btn {
+            background: rgba(251, 191, 36, 0.1);
+            border: 1px solid rgba(251, 191, 36, 0.3);
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-family: 'Orbitron', monospace;
+            font-size: 9px;
+            color: #fbbf24;
+            cursor: pointer;
+            transition: all .2s;
+        }
+
+        .copy-btn:hover {
+            background: rgba(251, 191, 36, 0.2);
+        }
+
+        .player-count {
+            font-family: 'Orbitron', monospace;
+            font-size: 11px;
+            color: var(--muted);
+            letter-spacing: 2px;
+        }
+
+        .player-count span {
+            color: var(--text);
+            font-weight: 700;
+        }
+
+        .player-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            margin-bottom: 20px;
+            min-height: 120px;
+        }
+
+        .player-slot {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 10px;
+            padding: 12px 8px;
+            text-align: center;
+            transition: all .2s;
+        }
+
+        .player-slot.filled {
+            border-color: rgba(100, 130, 200, 0.3);
+        }
+
+        .player-slot .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            margin: 0 auto 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+
+        .player-slot .pname {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .player-slot .ptag {
+            font-family: 'Orbitron', monospace;
+            font-size: 8px;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        .lobby-hint {
+            font-size: 12px;
+            color: var(--muted);
+            text-align: center;
+            margin-bottom: 16px;
+            letter-spacing: 1px;
+        }
+
+        .lobby-hint b {
+            color: var(--text);
+        }
+
+        /* Chat */
+        .chat-wrap {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 10px;
+            margin-bottom: 14px;
+            overflow: hidden;
+        }
+
+        #chat-log {
+            height: 100px;
+            overflow-y: auto;
+            padding: 8px 10px;
+            font-size: 12px;
+            font-weight: 600;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        #chat-log::-webkit-scrollbar {
+            width: 3px;
+        }
+
+        #chat-log::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 3px;
+        }
+
+        .chat-msg {
+            display: flex;
+            gap: 6px;
+            align-items: baseline;
+        }
+
+        .chat-msg .cn {
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .chat-msg .ct {
+            color: rgba(200, 210, 240, 0.8);
+        }
+
+        .chat-input-row {
+            display: flex;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        #chat-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            padding: 8px 10px;
+            color: var(--text);
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+            outline: none;
+        }
+
+        #chat-send {
+            background: rgba(59, 130, 246, 0.2);
+            border: none;
+            border-left: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 8px 14px;
+            color: var(--accent);
+            font-family: 'Orbitron', monospace;
+            font-size: 10px;
+            cursor: pointer;
+            transition: background .2s;
+        }
+
+        #chat-send:hover {
+            background: rgba(59, 130, 246, 0.3);
+        }
+
+        /* ─── GAME UI ──────────────────────────────────────────── */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            overflow: hidden;
+        }
+
+        .hud-panel {
+            background: linear-gradient(135deg, rgba(10, 15, 30, 0.97), rgba(5, 10, 20, 0.97));
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        }
+
+        .hlabel {
+            font-family: 'Orbitron', monospace;
+            font-size: 9px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 2px;
+        }
+
+        .hvalue {
+            font-family: 'Orbitron', monospace;
+            font-weight: 700;
+            font-size: 18px;
+            line-height: 1;
+        }
+
+        #top-bar {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            display: flex;
+            align-items: stretch;
+            gap: 6px;
+            padding: 10px;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .stat-card {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding: 8px 12px;
+            pointer-events: auto;
+        }
+
+        /* Gate bar */
+        #gate-bar-wrap {
+            flex: 1;
+            height: 8px;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 4px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        #gate-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #7c3aed, #c026d3);
+            border-radius: 4px;
+            transition: width .3s;
+        }
+
+        #timer-banner {
+            display: none;
+            flex: 1;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(90deg, rgba(239, 68, 68, 0.08), rgba(239, 68, 68, 0.18), rgba(239, 68, 68, 0.08));
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            border-radius: 8px;
+            padding: 6px 20px;
+            text-align: center;
+        }
+
+        #ghost-timer-text {
+            font-family: 'Orbitron', monospace;
+            font-size: 12px;
+            font-weight: 700;
+            color: #f87171;
+            letter-spacing: 3px;
+        }
+
+        #ghost-level-card {
+            padding: 8px 14px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            border-color: rgba(239, 68, 68, 0.4);
+            background: linear-gradient(135deg, rgba(30, 5, 5, 0.97), rgba(20, 5, 5, 0.97));
+            pointer-events: auto;
+        }
+
+        .ghost-lv-num {
+            font-family: 'Orbitron', monospace;
+            font-size: 22px;
+            font-weight: 900;
+            color: #ef4444;
+            line-height: 1;
+            text-shadow: 0 0 15px rgba(239, 68, 68, 0.8);
+        }
+
+        /* Player bubbles */
+        #player-list-ui {
+            position: absolute;
+            top: 90px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            pointer-events: auto;
+            z-index: 20;
+            gap: 6px;
+        }
+
+        /* Action Panel */
+        #action-panel {
+            display: none;
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 310px;
+            pointer-events: auto;
+            z-index: 30;
+        }
+
+        .ap-header {
+            background: linear-gradient(135deg, rgba(20, 30, 60, 0.97), rgba(10, 15, 40, 0.97));
+            border-bottom: 1px solid rgba(100, 130, 200, 0.2);
+            padding: 14px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-radius: 12px 12px 0 0;
+        }
+
+        #ap-title {
+            font-family: 'Orbitron', monospace;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        #ap-close {
+            color: var(--muted);
+            font-size: 22px;
+            font-weight: 900;
+            cursor: pointer;
+            border: none;
+            background: none;
+            line-height: 1;
+            transition: color .2s;
+        }
+
+        #ap-close:hover {
+            color: #fff;
+        }
+
+        #ap-content {
+            padding: 14px;
+            max-height: 72vh;
+            overflow-y: auto;
+            border-radius: 0 0 12px 12px;
+            background: linear-gradient(135deg, rgba(10, 15, 30, 0.97), rgba(5, 10, 20, 0.97));
+        }
+
+        #ap-content::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        #ap-content::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 4px;
+        }
+
+        /* Build panel tabs + grid */
+        .sec-tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 12px;
+        }
+
+        .sec-tab {
+            flex: 1;
+            padding: 7px 4px;
+            border-radius: 7px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(0, 0, 0, 0.25);
+            color: rgba(180, 200, 240, 0.45);
+            font-family: 'Orbitron', monospace;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: all .15s;
+            text-align: center;
+        }
+
+        /* Each section = one column of items */
+        .build-section {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .build-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(0, 0, 0, 0.28);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 9px;
+            padding: 9px 11px;
+            cursor: pointer;
+            transition: all .18s;
+        }
+
+        .build-row:hover:not(.disabled) {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.18);
+        }
+
+        .build-row.disabled {
+            opacity: 0.38;
+            cursor: not-allowed;
+        }
+
+        .build-row .bicon {
+            font-size: 24px;
+            width: 30px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+
+        .build-row .binfo {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .build-row .bname {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1.2;
+        }
+
+        .build-row .bstat {
+            font-size: 10px;
+            color: var(--muted);
+            margin-top: 1px;
+        }
+
+        .build-row .bone {
+            font-size: 9px;
+            color: #f97316;
+            font-weight: 700;
+            margin-top: 1px;
+        }
+
+        .build-row .bcost {
+            font-family: 'Orbitron', monospace;
+            font-size: 11px;
+            color: #fbbf24;
+            font-weight: 700;
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        .upgrade-btn {
+            width: 100%;
+            background: linear-gradient(135deg, #059669, #047857);
+            border: 1px solid #10b981;
+            color: #fff;
+            font-family: 'Orbitron', monospace;
+            font-size: 12px;
+            font-weight: 700;
+            padding: 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all .2s;
+            letter-spacing: 1px;
+            margin-top: 4px;
+        }
+
+        .upgrade-btn:hover:not(.disabled) {
+            background: linear-gradient(135deg, #10b981, #059669);
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+        }
+
+        .upgrade-btn.disabled {
+            background: rgba(71, 85, 105, 0.5);
+            border-color: rgba(71, 85, 105, 0.3);
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Repair btn */
+        #sleep-btn {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 40;
+            pointer-events: auto;
+            font-family: 'Orbitron', monospace;
+            font-size: 17px;
+            font-weight: 900;
+            color: #fff;
+            background: linear-gradient(135deg, #3b82f6, #6366f1);
+            border: 2px solid rgba(99, 102, 241, 0.8);
+            border-radius: 50px;
+            padding: 14px 36px;
+            letter-spacing: 3px;
+            cursor: pointer;
+            animation: sleepPulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes sleepPulse {
+
+            0%,
+            100% {
+                box-shadow: 0 0 20px rgba(99, 102, 241, 0.5);
+            }
+
+            50% {
+                box-shadow: 0 0 45px rgba(99, 102, 241, 0.9);
+            }
+        }
+
+        #repair-btn-wrap {
+            display: none;
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            pointer-events: auto;
+            z-index: 40;
+            text-align: center;
+        }
+
+        #repair-btn {
+            font-family: 'Orbitron', monospace;
+            font-size: 12px;
+            font-weight: 700;
+            color: #fff;
+            background: linear-gradient(135deg, #ea580c, #c2410c);
+            border: 2px solid rgba(234, 88, 12, 0.8);
+            border-radius: 8px;
+            padding: 10px 22px;
+            cursor: pointer;
+            letter-spacing: 2px;
+            transition: all .2s;
+        }
+
+        #repair-btn.cooldown {
+            background: linear-gradient(135deg, #334155, #1e293b);
+            border-color: rgba(71, 85, 105, 0.5);
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        #repair-timer {
+            font-size: 10px;
+            color: var(--muted);
+            margin-top: 4px;
+            font-family: 'Orbitron', monospace;
+            letter-spacing: 1px;
+        }
+
+        #cam-hint {
+            display: none;
+            position: absolute;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(5, 10, 20, 0.85);
+            border: 1px solid var(--border);
+            border-radius: 50px;
+            padding: 8px 20px;
+            font-size: 11px;
+            color: rgba(180, 200, 240, 0.8);
+            letter-spacing: 1px;
+            pointer-events: none;
+            font-family: 'Orbitron', monospace;
+        }
+
+        /* Joystick */
+        #joystick-zone {
+            position: absolute;
+            bottom: 30px;
+            left: 30px;
+            width: 120px;
+            height: 120px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 2px solid rgba(255, 255, 255, 0.15);
+            border-radius: 50%;
+            display: none;
+            pointer-events: auto;
+            z-index: 10;
+        }
+
+        #joystick-knob {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 44px;
+            height: 44px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            border: 2px solid rgba(255, 255, 255, 0.4);
+        }
+
+        /* End screen */
+        #end-screen {
+            display: none;
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(ellipse at center, rgba(5, 10, 30, 0.98), rgba(0, 0, 0, 0.99));
+            z-index: 50;
+            pointer-events: auto;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .end-card {
+            background: linear-gradient(135deg, rgba(10, 15, 35, 0.98), rgba(5, 8, 20, 0.98));
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 48px;
+            max-width: 440px;
+            width: 100%;
+            text-align: center;
+        }
+
+        #end-title {
+            font-family: 'Orbitron', monospace;
+            font-size: 48px;
+            font-weight: 900;
+            letter-spacing: 4px;
+            margin-bottom: 10px;
+            line-height: 1;
+        }
+
+        #end-desc {
+            font-size: 16px;
+            color: rgba(180, 200, 240, 0.8);
+            margin-bottom: 28px;
+        }
+
+        .replay-btn {
+            width: 100%;
+            background: linear-gradient(135deg, #e2e8f0, #cbd5e1);
+            color: #0f172a;
+            font-family: 'Orbitron', monospace;
+            font-size: 14px;
+            font-weight: 900;
+            padding: 14px;
+            border-radius: 12px;
+            cursor: pointer;
+            letter-spacing: 2px;
+            border: none;
+            transition: all .2s;
+        }
+
+        .replay-btn:hover {
+            box-shadow: 0 0 30px rgba(255, 255, 255, 0.3);
+        }
+
+        /* Ghost role banner */
+        #role-banner {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 45;
+            pointer-events: none;
+            text-align: center;
+            animation: roleFade 4s ease-out forwards;
+        }
+
+        @keyframes roleFade {
+            0% {
+                opacity: 0;
+                transform: translate(-50%, -50%) scale(.7);
+            }
+
+            20% {
+                opacity: 1;
+                transform: translate(-50%, -50%) scale(1.05);
+            }
+
+            80% {
+                opacity: 1;
+            }
+
+            100% {
+                opacity: 0;
+                transform: translate(-50%, -50%) scale(1);
+            }
+        }
+
+        #role-banner .rbig {
+            font-family: 'Orbitron', monospace;
+            font-size: 52px;
+            font-weight: 900;
+            text-shadow: 0 0 40px currentColor;
+        }
+
+        #role-banner .rsub {
+            font-family: 'Orbitron', monospace;
+            font-size: 14px;
+            letter-spacing: 4px;
+            margin-top: 8px;
+            opacity: 0.8;
+        }
+
+        /* Minimap */
+        #minimap {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 160px;
+            height: 160px;
+            border: 1px solid rgba(100, 130, 200, 0.4);
+            border-radius: 8px;
+            background: rgba(5, 10, 20, 0.92);
+            pointer-events: none;
+            z-index: 20;
+            overflow: hidden;
+        }
+
+        #minimap canvas {
+            display: block;
+        }
+
+        #minimap-label {
+            position: absolute;
+            top: 3px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            font-family: 'Orbitron', monospace;
+            font-size: 7px;
+            letter-spacing: 2px;
+            color: rgba(100, 130, 200, 0.6);
+            pointer-events: none;
+        }
+
+        /* Ghost HUD bottom bar */
+        #ghost-hud {
+            display: none;
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            pointer-events: auto;
+            z-index: 30;
+            display: none;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .ghost-ability {
+            background: rgba(5, 10, 20, 0.92);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            border-radius: 10px;
+            padding: 10px 16px;
+            text-align: center;
+            cursor: pointer;
+            transition: all .2s;
+            min-width: 80px;
+        }
+
+        .ghost-ability:hover {
+            background: rgba(239, 68, 68, 0.15);
+            border-color: rgba(239, 68, 68, 0.8);
+        }
+
+        .ghost-ability.disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+
+        .ghost-ability .ga-icon {
+            font-size: 22px;
+        }
+
+        .ghost-ability .ga-name {
+            font-family: 'Orbitron', monospace;
+            font-size: 8px;
+            letter-spacing: 1px;
+            color: rgba(239, 68, 68, 0.8);
+            margin-top: 3px;
+        }
+
+        /* Spectator overlay */
+        #spectator-bar {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(5, 10, 20, 0.88);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: 12px;
+            padding: 14px 28px;
+            text-align: center;
+            pointer-events: none;
+            z-index: 35;
+        }
+
+        #spectator-bar .sb-title {
+            font-family: 'Orbitron', monospace;
+            font-size: 13px;
+            color: #ef4444;
+            letter-spacing: 3px;
+            font-weight: 700;
+        }
+
+        #spectator-bar .sb-hint {
+            font-size: 11px;
+            color: rgba(180, 200, 240, 0.6);
+            margin-top: 5px;
+            letter-spacing: 1px;
+        }
+
+        #game-chat {
+            position: absolute;
+            bottom: 20px;
+            right: 10px;
+            width: 260px;
+            pointer-events: auto;
+            z-index: 20;
+        }
+
+        #game-chat-log {
+            background: rgba(5, 10, 20, 0.7);
+            border: 1px solid var(--border);
+            border-radius: 8px 8px 0 0;
+            height: 80px;
+            overflow-y: auto;
+            padding: 6px 8px;
+            font-size: 11px;
+            font-weight: 600;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .gcm {
+            display: flex;
+            gap: 5px;
+            align-items: baseline;
+        }
+
+        .gcm .gcn {
+            font-weight: 700;
+            white-space: nowrap;
+            font-size: 10px;
+        }
+
+        .gcm .gct {
+            color: rgba(200, 210, 240, 0.8);
+        }
+
+        #game-chat-input-row {
+            display: flex;
+            background: rgba(5, 10, 20, 0.85);
+            border: 1px solid var(--border);
+            border-top: none;
+            border-radius: 0 0 8px 8px;
+            overflow: hidden;
+        }
+
+        #game-chat-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            padding: 7px 9px;
+            color: var(--text);
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 12px;
+            font-weight: 600;
+            outline: none;
+        }
+
+        #game-chat-send {
+            background: rgba(59, 130, 246, 0.2);
+            border: none;
+            border-left: 1px solid var(--border);
+            padding: 7px 12px;
+            color: var(--accent);
+            font-family: 'Orbitron', monospace;
+            font-size: 9px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- ─── ENTRY SCREEN ──────────────────────────────────────────── -->
+    <div id="entry-screen" class="screen">
+        <div class="card">
+            <div class="logo">GHOST KILLER</div>
+            <div class="logo-sub">Multiplayer Survival</div>
+            <div id="entry-error" class="error-msg"></div>
+            <div class="field">
+                <label>Your Name</label>
+                <input id="player-name" type="text" placeholder="Enter your name..." maxlength="20" autocomplete="off">
+            </div>
+            <button class="btn btn-primary" id="create-btn">＋ CREATE GAME</button>
+            <div class="divider">OR</div>
+            <div class="field">
+                <label>Room ID</label>
+                <input id="room-id-input" type="text" placeholder="Enter 6-letter code..." maxlength="6"
+                    style="text-transform:uppercase;letter-spacing:3px;" autocomplete="off">
+            </div>
+            <button class="btn btn-secondary" id="join-btn">→ JOIN GAME</button>
+        </div>
+    </div>
+
+    <!-- ─── LOBBY SCREEN ──────────────────────────────────────────── -->
+    <div id="lobby-screen" class="screen hidden">
+        <div class="card">
+            <div class="lobby-header">
+                <div>
+                    <div
+                        style="font-family:'Orbitron',monospace;font-size:11px;letter-spacing:3px;color:var(--muted);margin-bottom:6px;">
+                        GAME LOBBY</div>
+                    <div class="room-id-badge">
+                        <div>
+                            <div class="label">ROOM ID</div>
+                            <div class="value" id="lobby-room-id">------</div>
+                        </div>
+                        <button class="copy-btn" onclick="copyRoomId()">COPY</button>
+                    </div>
+                </div>
+                <div style="text-align:right;">
+                    <div class="player-count"><span id="lobby-count">0</span> / 7 players</div>
+                    <div style="font-family:'Orbitron',monospace;font-size:9px;color:var(--muted);margin-top:4px;">MIN 3
+                        TO START</div>
+                </div>
+            </div>
+
+            <div class="player-grid" id="lobby-player-grid"></div>
+
+            <div class="lobby-hint">One player is secretly chosen as the <b>👻 Ghost</b> when the game starts.</div>
+
+            <div class="chat-wrap">
+                <div id="chat-log"></div>
+                <div class="chat-input-row">
+                    <input id="chat-input" type="text" placeholder="Chat..." maxlength="80" autocomplete="off">
+                    <button id="chat-send">SEND</button>
+                </div>
+            </div>
+
+            <button class="btn btn-primary" id="start-btn" disabled>▶ START GAME</button>
+            <button class="btn btn-danger" id="leave-btn">← LEAVE</button>
+        </div>
+    </div>
+
+    <!-- ─── GAME ──────────────────────────────────────────────────── -->
+    <div id="ui-layer" class="hidden">
+        <div id="top-bar">
+            <div id="panel-left" style="display:flex;gap:6px;pointer-events:auto;">
+                <div class="hud-panel stat-card">
+                    <div class="hlabel">Coins</div>
+                    <div class="hvalue" style="color:#fbbf24;">🪙 <span id="stat-coins">0</span></div>
+                </div>
+                <div class="hud-panel stat-card">
+                    <div class="hlabel">Energy</div>
+                    <div class="hvalue" style="color:#22d3ee;">⚡ <span id="stat-energy">0</span></div>
+                </div>
+                <div class="hud-panel" style="padding:8px 12px;min-width:160px;pointer-events:auto;">
+                    <div class="hlabel">Gate HP</div>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+                        <div id="gate-bar-wrap">
+                            <div id="gate-bar-fill" style="width:100%"></div>
+                        </div>
+                        <span
+                            style="font-family:'Orbitron',monospace;font-size:11px;color:#a78bfa;white-space:nowrap;font-weight:700;"><span
+                                id="stat-gate-hp">100</span>/<span id="stat-gate-max">100</span></span>
+                    </div>
+                    <div style="font-family:'Orbitron',monospace;font-size:10px;color:var(--muted);margin-top:4px;">ATK:
+                        <span id="stat-attack" style="color:#f87171;">0</span>/s</div>
+                </div>
+            </div>
+            <div style="flex:1;display:flex;justify-content:center;align-items:center;pointer-events:none;">
+                <div id="timer-banner">
+                    <div id="ghost-timer-text">GHOST AWAKENS IN: 30s</div>
+                </div>
+            </div>
+            <div style="pointer-events:auto;">
+                <div class="hud-panel" id="ghost-level-card">
+                    <div class="hlabel" style="color:rgba(239,68,68,0.7);">👻 Ghost</div>
+                    <div class="ghost-lv-num">Lv.<span id="ghost-level-display">1</span></div>
+                    <div
+                        style="width:60px;height:4px;background:rgba(0,0,0,0.4);border-radius:2px;overflow:hidden;margin-top:4px;">
+                        <div id="ghost-xp-bar"
+                            style="height:100%;background:linear-gradient(90deg,#a855f7,#7c3aed);width:0%;border-radius:2px;transition:width .3s;">
+                        </div>
+                    </div>
+                    <div
+                        style="font-family:'Orbitron',monospace;font-size:9px;color:rgba(239,68,68,0.6);margin-top:2px;">
+                        HP: <span id="ghost-hp-display">?</span></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="player-list-ui"></div>
+
+        <div id="action-panel" class="hud-panel">
+            <div class="ap-header">
+                <span id="ap-title">Build</span>
+                <button id="ap-close">×</button>
+            </div>
+            <div id="ap-content"></div>
+        </div>
+
+        <div id="cam-hint">🎥 WASD — FREE CAMERA</div>
+        <div id="joystick-zone">
+            <div id="joystick-knob"></div>
+        </div>
+
+        <div id="minimap"><canvas id="minimap-canvas" width="160" height="160"></canvas>
+            <div id="minimap-label">MAP</div>
+        </div>
+
+        <div id="ghost-hud">
+            <div class="ghost-ability" id="ga-net" onclick="ghostUseNet()">
+                <div class="ga-icon">🕸️</div>
+                <div class="ga-name">NEARBY<br>NET</div>
+            </div>
+        </div>
+
+        <div id="spectator-bar">
+            <div class="sb-title">☠ YOU DIED</div>
+            <div class="sb-hint">WASD to spectate · Watch the battle</div>
+        </div>
+
+        <!-- In-game chat -->
+        <div id="game-chat">
+            <div id="game-chat-log"></div>
+            <div id="game-chat-input-row">
+                <input id="game-chat-input" type="text" placeholder="Chat..." maxlength="80" autocomplete="off">
+                <button id="game-chat-send">SEND</button>
+            </div>
+        </div>
+    </div>
+
+    <button id="sleep-btn">💤 SLEEP</button>
+    <div id="repair-btn-wrap">
+        <button id="repair-btn" class="active">🔧 REPAIR GATE</button>
+        <div id="repair-timer">READY</div>
+    </div>
+    <div id="role-banner"></div>
+
+    <div id="end-screen">
+        <div class="end-card">
+            <div id="end-title">GAME OVER</div>
+            <div id="end-desc">Match ended.</div>
+            <div id="end-stats" style="display:flex;gap:10px;justify-content:center;margin:20px 0;flex-wrap:wrap;">
+            </div>
+            <button class="replay-btn" onclick="location.reload()">↺ PLAY AGAIN</button>
+        </div>
+    </div>
+
+    <script>
+        // ════════════════════════════════════════════════════════════════
+        //  GHOST KILLER — Multiplayer Client
+        // ════════════════════════════════════════════════════════════════
+
+        const TILE_SIZE = 48;
+        const MAP_W = 60, MAP_H = 60;
+
+        const BED_COSTS = [10, 25, 60, 150, 300, 600, 1500, 3000, 6000, 12000, 25000, 50000];
+        const BED_INCOME = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048];
+        const DOOR_COSTS = [20, 50, 120, 250, 500, 1000, 2500, 5000, 10000, 20000, 40000, 80000];
+        const DOOR_HPS = [100, 300, 800, 2000, 5000, 12000, 25000, 50000, 100000, 250000, 500000, 1000000];
+        const TURRET_COSTS = [30, 80, 200, 450, 1000, 2500, 6000, 12000, 25000, 50000, 100000, 250000];
+        const TURRET_DMG = [10, 25, 60, 150, 400, 1000, 2500, 5000, 12000, 25000, 60000, 150000];
+        const TURRET_RNG = [250, 275, 300, 325, 350, 375, 400, 425, 450, 475, 500, 550];
+        const GEN_COSTS = [50, 120, 300, 700, 1500, 3000, 7000, 15000, 30000, 60000, 120000, 300000];
+        const GEN_INCOME = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048];
+        const TIER_COLORS = ['#8b5cf6', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#06b6d4', '#e2e8f0', '#fbbf24', '#f43f5e', '#8b5cf6', '#fff'];
+        const MAT_COLORS = ['#78350f', '#92400e', '#b45309', '#64748b', '#94a3b8', '#cbd5e1', '#ca8a04', '#eab308', '#fde047', '#06b6d4', '#22d3ee', '#67e8f9'];
+        const MINE_INCOME = { copper: [2, 4, 8, 16, 32, 64], silver: [6, 12, 24, 48, 96, 192], gold: [15, 30, 60, 120, 240, 480] };
+
+        // ── CANVAS ───────────────────────────────────────────────────────
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        let W = window.innerWidth, H = window.innerHeight;
+        canvas.width = W; canvas.height = H;
+        window.addEventListener('resize', () => { W = window.innerWidth; H = window.innerHeight; canvas.width = W; canvas.height = H; });
+
+        // ── SOCKET ───────────────────────────────────────────────────────
+        const socket = io();
+
+        // ── LOCAL STATE ──────────────────────────────────────────────────
+        let myId = null, myName = '', myRoomId = '', isHost = false;
+        let gameState = null;  // server state snapshot
+        let map = null, rooms = null;
+        let myRole = null; // 'survivor' | 'ghost'
+        let camX = 0, camY = 0;
+        let selectedTile = null;
+        let particles = [], floatingTexts = [], grenadeEffects = [];
+        let hasSlepped = false;
+        let repairCooldown = 0, repairActive = false, repairActiveTimer = 0;
+
+        const keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false };
+        window.addEventListener('keydown', e => { if (keys.hasOwnProperty(e.key)) keys[e.key] = true; });
+        window.addEventListener('keyup', e => { if (keys.hasOwnProperty(e.key)) keys[e.key] = false; });
+
+        let joyActive = false, joyDelta = { x: 0, y: 0 }, joyOrigin = { x: 0, y: 0 };
+        const joyZone = document.getElementById('joystick-zone'), joyKnob = document.getElementById('joystick-knob');
+        if ('ontouchstart' in window || navigator.maxTouchPoints > 0) joyZone.style.display = 'block';
+        joyZone.addEventListener('touchstart', e => { e.preventDefault(); joyActive = true; let t = e.changedTouches[0]; let r = joyZone.getBoundingClientRect(); joyOrigin.x = r.left + r.width / 2; joyOrigin.y = r.top + r.height / 2; _updateJoy(t.clientX, t.clientY); });
+        joyZone.addEventListener('touchmove', e => { e.preventDefault(); if (joyActive) _updateJoy(e.changedTouches[0].clientX, e.changedTouches[0].clientY); });
+        const _ej = e => { e.preventDefault(); joyActive = false; joyDelta = { x: 0, y: 0 }; joyKnob.style.transform = 'translate(-50%,-50%)'; };
+        joyZone.addEventListener('touchend', _ej); joyZone.addEventListener('touchcancel', _ej);
+        function _updateJoy(cx, cy) { let dx = cx - joyOrigin.x, dy = cy - joyOrigin.y, d = Math.sqrt(dx * dx + dy * dy); if (d > 35) { dx = dx / d * 35; dy = dy / d * 35; } joyKnob.style.transform = `translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px))`; joyDelta.x = dx / 35; joyDelta.y = dy / 35; }
+
+        const dist = (x1, y1, x2, y2) => Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+        function addFT(x, y, text, color) { floatingTexts.push({ x, y, text, color, life: 1.5, maxLife: 1.5 }); }
+        function addParts(x, y, color, n = 6) { for (let i = 0; i < n; i++)particles.push({ x, y, vx: (Math.random() - .5) * 8, vy: (Math.random() - .5) * 8, life: Math.random() * .4 + .2, maxLife: 1, color }); }
+
+        // ── CLIENT-SIDE COLLISION ────────────────────────────────────────
+        // Mirrors the server logic so movement feels responsive.
+        // Server is authoritative and will correct any discrepancy.
+        function clientTileBlocks(tx, ty) {
+            if (!map || tx < 0 || tx >= MAP_W || ty < 0 || ty >= MAP_H) return true;
+            if (map[ty][tx] === 1) return true;
+            if (map[ty][tx] === 2) {
+                const room = rooms && rooms.find(r => r.door.x === tx && r.door.y === ty);
+                if (!room || !room.owner) return false;
+                return room.door.hp > 0;          // gate is solid while hp > 0
+            }
+            return false;
+        }
+
+        // 8-point perimeter check, radius slightly inset so entity doesn't stick
+        function clientWallHit(nx, ny, radius) {
+            const r = radius - 2;
+            const pts = [
+                { x: nx - r, y: ny - r }, { x: nx, y: ny - r }, { x: nx + r, y: ny - r },
+                { x: nx - r, y: ny }, { x: nx + r, y: ny },
+                { x: nx - r, y: ny + r }, { x: nx, y: ny + r }, { x: nx + r, y: ny + r },
+            ];
+            for (const p of pts) {
+                if (clientTileBlocks(Math.floor(p.x / TILE_SIZE), Math.floor(p.y / TILE_SIZE))) return true;
+            }
+            return false;
+        }
+
+        // Wall-sliding movement — returns new {x,y}, never teleports through walls
+        function clientMoveCollide(x, y, vx, vy, speed, dt, radius) {
+            const steps = 4;
+            let nx = x, ny = y;
+            const dx = (vx * speed * dt) / steps;
+            const dy = (vy * speed * dt) / steps;
+            for (let i = 0; i < steps; i++) {
+                if (!clientWallHit(nx + dx, ny, radius)) nx += dx;
+                if (!clientWallHit(nx, ny + dy, radius)) ny += dy;
+            }
+            return { x: nx, y: ny };
+        }
+
+        // ── ENTRY SCREEN ─────────────────────────────────────────────────
+        document.getElementById('create-btn').addEventListener('click', () => {
+            const name = document.getElementById('player-name').value.trim();
+            showError('');
+            if (!name) return showError('Enter your name first.');
+            socket.emit('create_room', { name }, (res) => {
+                if (res.error) return showError(res.error);
+                myId = socket.id; myName = res.name; myRoomId = res.roomId; isHost = true;
+                showLobby(res.roomId);
+            });
+        });
+        document.getElementById('join-btn').addEventListener('click', () => {
+            const name = document.getElementById('player-name').value.trim();
+            const roomId = document.getElementById('room-id-input').value.trim().toUpperCase();
+            showError('');
+            if (!name) return showError('Enter your name first.');
+            if (!roomId || roomId.length < 4) return showError('Enter a valid Room ID.');
+            socket.emit('join_room', { name, roomId }, (res) => {
+                if (res.error) return showError(res.error);
+                myId = socket.id; myName = res.name; myRoomId = res.roomId; isHost = false;
+                showLobby(res.roomId);
+            });
+        });
+        document.getElementById('player-name').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('create-btn').click(); });
+        document.getElementById('room-id-input').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('join-btn').click(); });
+        document.getElementById('room-id-input').addEventListener('input', e => { e.target.value = e.target.value.toUpperCase(); });
+
+        function showError(msg) {
+            const el = document.getElementById('entry-error');
+            el.textContent = msg; el.style.display = msg ? 'block' : 'none';
+        }
+        function showLobby(roomId) {
+            document.getElementById('entry-screen').classList.add('hidden');
+            document.getElementById('lobby-screen').classList.remove('hidden');
+            document.getElementById('lobby-room-id').textContent = roomId;
+        }
+        window.copyRoomId = () => { navigator.clipboard?.writeText(myRoomId); addLobbyChat('System', 'Room ID copied!', '#22d3ee'); };
+
+        // ── LOBBY ────────────────────────────────────────────────────────
+        socket.on('lobby_update', (state) => {
+            const players = state.players;
+            document.getElementById('lobby-count').textContent = players.length;
+            const grid = document.getElementById('lobby-player-grid');
+            grid.innerHTML = '';
+            for (let i = 0; i < 7; i++) {
+                const p = players[i];
+                const slot = document.createElement('div');
+                slot.className = 'player-slot' + (p ? ' filled' : '');
+                if (p) {
+                    const colors = ['#38bdf8', '#a3e635', '#f472b6', '#fbbf24', '#c084fc', '#2dd4bf', '#fb923c'];
+                    const col = colors[i % colors.length];
+                    slot.innerHTML = `<div class="avatar" style="background:${col}20;border:2px solid ${col};">🧑</div><div class="pname">${p.name}</div><div class="ptag">${p.isHost ? 'HOST' : p.id === myId ? 'YOU' : ''}</div>`;
+                    slot.style.borderColor = col + '60';
+                } else {
+                    slot.innerHTML = `<div class="avatar" style="border:2px dashed rgba(255,255,255,0.1);">👤</div><div class="pname" style="color:rgba(150,170,220,0.3);">Waiting...</div>`;
+                }
+                grid.appendChild(slot);
+            }
+            // Update host status
+            if (state.hostId === socket.id) isHost = true;
+            const startBtn = document.getElementById('start-btn');
+            startBtn.disabled = !(isHost && players.length >= 3);
+            if (isHost && players.length < 3) startBtn.textContent = `▶ NEED ${3 - players.length} MORE`;
+            else if (isHost) startBtn.textContent = '▶ START GAME';
+            else startBtn.textContent = 'Waiting for host...';
+        });
+
+        socket.on('you_are_host', () => { isHost = true; });
+
+        document.getElementById('start-btn').addEventListener('click', () => {
+            if (!isHost) return;
+            socket.emit('start_game', (res) => { if (res?.error) addLobbyChat('Error', res.error, '#ef4444'); });
+        });
+        document.getElementById('leave-btn').addEventListener('click', () => { location.reload(); });
+
+        // Lobby chat
+        function addLobbyChat(name, text, color = '#e2e8f0') {
+            const log = document.getElementById('chat-log');
+            const div = document.createElement('div');
+            div.className = 'chat-msg';
+            div.innerHTML = `<span class="cn" style="color:${color}">${name}:</span><span class="ct">${text}</span>`;
+            log.appendChild(div); log.scrollTop = log.scrollHeight;
+        }
+        document.getElementById('chat-send').addEventListener('click', sendLobbyChat);
+        document.getElementById('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendLobbyChat(); });
+        function sendLobbyChat() {
+            const text = document.getElementById('chat-input').value.trim();
+            if (!text) return;
+            socket.emit('chat_message', { text });
+            document.getElementById('chat-input').value = '';
+        }
+        socket.on('chat_message', ({ name, text }) => {
+            // Route to lobby chat if lobby is visible, else in-game chat
+            const lobbyVisible = !document.getElementById('lobby-screen').classList.contains('hidden');
+            if (lobbyVisible) { addLobbyChat(name, text); return; }
+            // In-game chat
+            const log = document.getElementById('game-chat-log');
+            if (!log) return;
+            const colors = ['#38bdf8', '#a3e635', '#f472b6', '#fbbf24', '#c084fc', '#2dd4bf', '#fb923c'];
+            const col = colors[name.charCodeAt(0) % colors.length];
+            const div = document.createElement('div');
+            div.className = 'gcm';
+            div.innerHTML = `<span class="gcn" style="color:${col}">${name}:</span><span class="gct">${text}</span>`;
+            log.appendChild(div); log.scrollTop = log.scrollHeight;
+        });
+
+        // ── GAME START ───────────────────────────────────────────────────
+        socket.on('game_start', (initState) => {
+            document.getElementById('lobby-screen').classList.add('hidden');
+            document.getElementById('ui-layer').classList.remove('hidden');
+            document.getElementById('timer-banner').style.display = 'block';
+
+            map = initState.map;
+            rooms = initState.rooms;
+            gameState = initState;
+            gameState.ghostTimer = initState.ghostTimer;
+            gameState._startMs = Date.now();
+            window._timerHidden = false;
+
+            // Determine my role
+            const me = initState.players[socket.id];
+            myRole = me?.isGhost ? 'ghost' : 'survivor';
+
+            // Show role banner
+            const banner = document.getElementById('role-banner');
+            banner.style.display = 'block';
+            if (myRole === 'ghost') {
+                banner.innerHTML = `<div class="rbig" style="color:#ef4444;">👻 YOU ARE THE GHOST</div><div class="rsub" style="color:#fca5a5;">Hunt every survivor!</div>`;
+            } else {
+                banner.innerHTML = `<div class="rbig" style="color:#38bdf8;">🛌 SURVIVOR</div><div class="rsub" style="color:#93c5fd;">Find a room and defend!</div>`;
+            }
+            setTimeout(() => { banner.style.display = 'none'; }, 4200);
+
+            buildPlayerListUI(initState.players);
+            camX = me?.x || MAP_W / 2 * TILE_SIZE; camY = me?.y || MAP_H / 2 * TILE_SIZE;
+            startGameLoop();
+        });
+
+        // ── GAME TICK ────────────────────────────────────────────────────
+        socket.on('game_tick', (state) => {
+            // Merge authoritative state
+            if (state.players) {
+                // For survivors: only snap local position if server correction is large
+                const myOld = gameState?.players?.[socket.id];
+                gameState.players = state.players;
+                const myNew = gameState.players[socket.id];
+
+                if (myNew && !myNew.isGhost && myNew.state === 'ROAMING' && myOld) {
+                    const drift = dist(localX, localY, myNew.x, myNew.y);
+                    if (drift > TILE_SIZE * 2) {
+                        localX = myNew.x; localY = myNew.y;
+                    } else {
+                        myNew.x = localX; myNew.y = localY;
+                    }
+                }
+                // Ghost player: keep local predicted position unless server corrects us significantly
+                if (myNew && myNew.isGhost && myNew.state === 'ROAMING') {
+                    const drift = dist(localX, localY, myNew.x, myNew.y);
+                    if (drift > TILE_SIZE * 3) {
+                        // Server wall-corrected us — snap
+                        localX = myNew.x; localY = myNew.y;
+                    } else {
+                        // Use our locally predicted position for smooth rendering
+                        myNew.x = localX; myNew.y = localY;
+                    }
+                }
+            }
+            if (state.rooms) { rooms = state.rooms; gameState.rooms = rooms; }
+            if (state.ghostTimer !== undefined) gameState.ghostTimer = state.ghostTimer;
+            // gameOver is checked via game_over socket event, not here
+
+            // Update ghost timer UI
+            if (gameState.ghostTimer > 0) {
+                document.getElementById('ghost-timer-text').textContent = `👻 GHOST AWAKENS IN: ${Math.ceil(gameState.ghostTimer)}s`;
+                document.getElementById('timer-banner').style.display = 'flex';
+            } else {
+                document.getElementById('ghost-timer-text').textContent = '👻 GHOST IS HUNTING!';
+                // Hide after a few seconds
+                if (!window._timerHidden) {
+                    window._timerHidden = true;
+                    setTimeout(() => { document.getElementById('timer-banner').style.display = 'none'; }, 3000);
+                }
+            }
+
+            // Update ghost card
+            const ghostP = Object.values(gameState.players).find(p => p.isGhost);
+            if (ghostP) {
+                document.getElementById('ghost-level-display').textContent = ghostP.ghostLevel || 1;
+                document.getElementById('ghost-hp-display').textContent = Math.ceil(ghostP.hp);
+                document.getElementById('ghost-xp-bar').style.width = `${Math.min(100, (ghostP.ghostXp || 0) / ((ghostP.ghostLevel || 1) * 200) * 100)}%`;
+            }
+
+            // Update my stats
+            const me = gameState.players[socket.id];
+            if (me) {
+                document.getElementById('stat-coins').textContent = Math.floor(me.coins || 0);
+                document.getElementById('stat-energy').textContent = Math.floor(me.energy || 0);
+                if (me.room !== null && rooms[me.room]) {
+                    const r = rooms[me.room];
+                    document.getElementById('stat-gate-hp').textContent = Math.ceil(r.door.hp);
+                    document.getElementById('stat-gate-max').textContent = r.door.maxHp;
+                    const pct = Math.max(0, r.door.hp / r.door.maxHp * 100);
+                    document.getElementById('gate-bar-fill').style.width = pct + '%';
+                    document.getElementById('gate-bar-fill').style.background = pct > 60 ? 'linear-gradient(90deg,#7c3aed,#c026d3)' : pct > 30 ? 'linear-gradient(90deg,#b45309,#f59e0b)' : 'linear-gradient(90deg,#b91c1c,#ef4444)';
+                    document.getElementById('stat-attack').textContent = r.turrets.reduce((s, t) => s + TURRET_DMG[t.level - 1], 0);
+                }
+                // Repair state sync
+                if (me.repairActive !== undefined) { repairActive = me.repairActive; repairActiveTimer = me.repairActiveTimer || 0; }
+                if (me.repairCooldown !== undefined) repairCooldown = me.repairCooldown;
+                updateRepairBtn();
+            }
+
+            updatePlayerListUI();
+
+            // Dead player: show spectator overlay
+            const me2 = gameState.players[socket.id];
+            if (me2 && me2.state === 'DEAD' && !me2.isGhost) {
+                document.getElementById('spectator-bar').style.display = 'block';
+                document.getElementById('repair-btn-wrap').style.display = 'none';
+                document.getElementById('sleep-btn').style.display = 'none';
+            }
+
+            // Ghost HUD — show net button if the ghost player has a net available
+            if (myRole === 'ghost') {
+                const ghostHud = document.getElementById('ghost-hud');
+                ghostHud.style.display = 'flex';
+                // Find my room's net status — ghost doesn't have a room so just track globally
+                // Ghost player uses net globally, server handles it
+            }
+        });
+
+        socket.on('game_over', ({ winner }) => {
+            gameLoopRunning = false; // stop the render loop
+            document.getElementById('ui-layer').classList.add('hidden');
+            document.getElementById('sleep-btn').style.display = 'none';
+            document.getElementById('repair-btn-wrap').style.display = 'none';
+            document.getElementById('spectator-bar').style.display = 'none';
+            const es = document.getElementById('end-screen');
+            es.style.display = 'flex';
+
+            if (winner === 'survivors') {
+                document.getElementById('end-title').textContent = 'GHOST SLAIN!';
+                document.getElementById('end-title').style.color = '#22c55e';
+                document.getElementById('end-desc').textContent = 'The survivors defended their rooms!';
+            } else {
+                document.getElementById('end-title').textContent = 'GHOST WINS';
+                document.getElementById('end-title').style.color = '#ef4444';
+                document.getElementById('end-desc').textContent = 'All survivors were devoured…';
+            }
+
+            // Build match stats
+            if (gameState) {
+                const ghost = Object.values(gameState.players).find(p => p.isGhost);
+                const alive = Object.values(gameState.players).filter(p => !p.isGhost && p.state !== 'DEAD').length;
+                const total = Object.values(gameState.players).filter(p => !p.isGhost).length;
+                const secs = Math.floor((Date.now() - (gameState._startMs || Date.now())) / 1000);
+                const mm = Math.floor(secs / 60), ss = secs % 60;
+                const stats = [
+                    { icon: '👻', label: 'Ghost Level', val: ghost?.ghostLevel || '?' },
+                    { icon: '❤️', label: 'Survivors', val: `${alive}/${total}` },
+                    { icon: '⏱️', label: 'Duration', val: `${mm}m ${ss}s` },
+                ];
+                document.getElementById('end-stats').innerHTML = stats.map(s => `
+            <div style="background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:14px 18px;text-align:center;min-width:90px;">
+                <div style="font-size:24px;margin-bottom:4px;">${s.icon}</div>
+                <div style="font-family:'Orbitron',monospace;font-size:16px;font-weight:700;color:#e2e8f0;">${s.val}</div>
+                <div style="font-size:10px;color:rgba(150,170,220,0.6);margin-top:2px;letter-spacing:1px;">${s.label}</div>
+            </div>`).join('');
+            }
+        });
+
+        socket.on('grenade_exploded', ({ dmg }) => {
+            const g = gameState && Object.values(gameState.players).find(p => p.isGhost);
+            const fx = g ? g.x : MAP_W / 2 * TILE_SIZE;
+            const fy = g ? g.y - 30 : MAP_H / 2 * TILE_SIZE;
+            addFT(fx, fy, `💥 -${dmg}`, '#f97316');
+            addParts(fx, fy, '#f97316', 12);
+        });
+        socket.on('ghost_netted', () => {
+            const g = gameState && Object.values(gameState.players).find(p => p.isGhost);
+            const fx = g ? g.x : MAP_W / 2 * TILE_SIZE;
+            const fy = g ? g.y - 30 : MAP_H / 2 * TILE_SIZE;
+            addFT(fx, fy, '🕸️ NETTED!', '#a3e635');
+        });
+
+        socket.on('player_disconnected', ({ name }) => {
+            addFT(camX, camY - 60, `${name} disconnected`, '#94a3b8');
+        });
+
+        // In-game chat
+        document.getElementById('game-chat-send').addEventListener('click', sendGameChat);
+        document.getElementById('game-chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendGameChat(); });
+        function sendGameChat() {
+            const text = document.getElementById('game-chat-input').value.trim();
+            if (!text) return;
+            socket.emit('chat_message', { text });
+            document.getElementById('game-chat-input').value = '';
+        }
+
+        // ── SEND POSITION / INPUT ─────────────────────────────────────────
+        let sendPosTimer = 0;
+        function sendMyPosition(dt) {
+            sendPosTimer += dt;
+            if (sendPosTimer < 0.05) return; // 20 FPS
+            sendPosTimer = 0;
+            const me = gameState?.players?.[socket.id];
+            if (!me || me.state !== 'ROAMING') return;
+
+            if (me.isGhost) {
+                // Ghost: send input vector so server moves the ghost with collision
+                // Don't send during freeze
+                if (gameState.ghostTimer > 0) return;
+                socket.emit('ghost_move', { vx: me.vx || 0, vy: me.vy || 0, facing: me.facing || 0 });
+            } else {
+                // Survivor: send client-predicted position
+                socket.emit('player_move', { x: me.x, y: me.y, vx: me.vx || 0, vy: me.vy || 0, facing: me.facing || 0 });
+            }
+        }
+
+        // ── LOCAL MOVEMENT (client-side prediction with wall collision) ───
+        const PLAYER_RADIUS = 14;
+        const GHOST_RADIUS_C = 18;
+        let localX = 0, localY = 0, localFacing = 0, localVx = 0, localVy = 0;
+        let localInitDone = false;
+
+        function localMove(dt) {
+            const me = gameState?.players?.[socket.id];
+            if (!me || me.state !== 'ROAMING') return;
+
+            if (!localInitDone) { localX = me.x; localY = me.y; localInitDone = true; }
+
+            let vx = 0, vy = 0;
+            if (keys.w || keys.ArrowUp) vy = -1;
+            if (keys.s || keys.ArrowDown) vy = 1;
+            if (keys.a || keys.ArrowLeft) vx = -1;
+            if (keys.d || keys.ArrowRight) vx = 1;
+            if (joyActive) { vx = joyDelta.x; vy = joyDelta.y; }
+
+            const mag = Math.sqrt(vx * vx + vy * vy);
+            if (mag > 0 && !joyActive) { vx /= mag; vy /= mag; }
+            if (vx !== 0 || vy !== 0) localFacing = Math.atan2(vy, vx);
+
+            // Ghost frozen — no movement during countdown
+            if (me.isGhost && gameState.ghostTimer > 0) {
+                localX = me.x; localY = me.y;
+                return;
+            }
+
+            const spd = me.isGhost ? 130 : 220;
+
+            // Client-side wall collision for both ghost and survivor
+            if (map && rooms) {
+                const moved = clientMoveCollide(localX, localY, vx, vy, spd, dt, me.isGhost ? GHOST_RADIUS_C : PLAYER_RADIUS);
+                localX = moved.x; localY = moved.y;
+            } else {
+                localX += vx * spd * dt; localY += vy * spd * dt;
+            }
+
+            localX = Math.max(PLAYER_RADIUS, Math.min(MAP_W * TILE_SIZE - PLAYER_RADIUS, localX));
+            localY = Math.max(PLAYER_RADIUS, Math.min(MAP_H * TILE_SIZE - PLAYER_RADIUS, localY));
+
+            // Write predicted position so draw loop uses it immediately
+            me.x = localX; me.y = localY; me.vx = vx; me.vy = vy; me.facing = localFacing;
+            localVx = vx; localVy = vy;
+
+            // For survivors: snap if server corrected us (wall cheat prevention)
+            if (!me.isGhost) {
+                const serverDist = dist(localX, localY, me.x, me.y);
+                if (serverDist > TILE_SIZE * 3) { localX = me.x; localY = me.y; }
+            }
+            // Ghost: local prediction runs freely; game_tick snaps only on large drift
+
+            // Check near bed (survivors only)
+            if (!me.isGhost && !hasSlepped && rooms) {
+                let nearIdx = -1;
+                for (let i = 0; i < rooms.length; i++) {
+                    const r = rooms[i];
+                    if (r.owner) continue;
+                    const bpx = r.bed.x * TILE_SIZE + TILE_SIZE / 2, bpy = r.bed.y * TILE_SIZE + TILE_SIZE / 2;
+                    if (dist(localX, localY, bpx, bpy) < TILE_SIZE * 1.5) { nearIdx = i; break; }
+                }
+                const btn = document.getElementById('sleep-btn');
+                if (nearIdx >= 0) { btn.style.display = 'block'; btn.onclick = () => doSleep(nearIdx); }
+                else btn.style.display = 'none';
+            }
+        }
+
+        function doSleep(roomIdx) {
+            if (hasSlepped) return;
+            hasSlepped = true;
+            socket.emit('player_sleep', { roomIdx }, (res) => {
+                if (!res?.ok) return;
+                document.getElementById('sleep-btn').style.display = 'none';
+                document.getElementById('cam-hint').style.display = 'block';
+                document.getElementById('repair-btn-wrap').style.display = 'block';
+            });
+        }
+
+        // ── CAMERA ───────────────────────────────────────────────────────
+        function updateCamera(dt) {
+            const me = gameState?.players?.[socket.id];
+            if (!me) return;
+
+            if (me.state === 'ROAMING') {
+                // Both ghost and survivor: follow local predicted position directly
+                camX = localX; camY = localY;
+            } else {
+                // Sleeping or dead: free WASD / joystick camera pan
+                let cx = 0, cy = 0;
+                if (keys.w || keys.ArrowUp) cy = -1;
+                if (keys.s || keys.ArrowDown) cy = 1;
+                if (keys.a || keys.ArrowLeft) cx = -1;
+                if (keys.d || keys.ArrowRight) cx = 1;
+                if (joyActive) { cx = joyDelta.x; cy = joyDelta.y; }
+                camX += cx * 600 * dt;
+                camY += cy * 600 * dt;
+            }
+            camX = Math.max(W / 2, Math.min(camX, MAP_W * TILE_SIZE - W / 2));
+            camY = Math.max(H / 2, Math.min(camY, MAP_H * TILE_SIZE - H / 2));
+        }
+
+        // ── REPAIR BUTTON ─────────────────────────────────────────────────
+        document.getElementById('repair-btn').addEventListener('click', () => {
+            if (repairCooldown > 0 || repairActive) return;
+            socket.emit('player_repair', (res) => {
+                if (res?.ok) { repairActive = true; repairActiveTimer = 5; updateRepairBtn(); }
+            });
+        });
+        function updateRepairBtn() {
+            const btn = document.getElementById('repair-btn');
+            const tmr = document.getElementById('repair-timer');
+            if (repairActive) { btn.textContent = `🔧 REPAIRING ${Math.ceil(repairActiveTimer)}s`; btn.classList.add('cooldown'); tmr.textContent = ''; }
+            else if (repairCooldown > 0) { btn.textContent = '🔧 REPAIR GATE'; btn.classList.add('cooldown'); tmr.textContent = `COOLDOWN: ${Math.ceil(repairCooldown)}s`; }
+            else { btn.textContent = '🔧 REPAIR GATE'; btn.classList.remove('cooldown'); tmr.textContent = 'READY'; }
+        }
+
+        // ── BUILD PANEL ───────────────────────────────────────────────────
+        function openActionPanel(tileInfo) {
+            selectedTile = tileInfo;
+            const panel = document.getElementById('action-panel');
+            const title = document.getElementById('ap-title');
+            const content = document.getElementById('ap-content');
+            panel.style.display = 'block';
+            content.innerHTML = '';
+
+            const me = gameState?.players?.[socket.id];
+            if (!me) return;
+
+            if (tileInfo.type === 'empty') {
+                title.textContent = 'Build';
+                const r = rooms[tileInfo.roomIdx];
+                const hasCopperMine = r.mines.some(m => m.type === 'copper');
+                const hasSilverMine = r.mines.some(m => m.type === 'silver');
+                const hasGoldMine = r.mines.some(m => m.type === 'gold');
+
+                const sections = {
+                    basic: [
+                        { type: 'turret', icon: '🔫', name: 'Turret', stat: `Dmg ${TURRET_DMG[0]} · Rng ${TURRET_RNG[0]}`, cost: 30, oneUse: false, ok: me.coins >= 30 },
+                        { type: 'generator', icon: '⚡', name: 'Generator', stat: '+1 Energy/sec', cost: 50, oneUse: false, ok: me.coins >= 50 },
+                        { type: 'repair_tool', icon: '🔩', name: 'Repair Boost', stat: 'Faster gate repair', cost: 150, oneUse: false, ok: me.coins >= 150 && !r._hasRepairTool },
+                    ],
+                    money: [
+                        { type: 'copper_mine', icon: '⛏️', name: 'Copper Mine', stat: '+2 🪙/sec', cost: 40, oneUse: false, ok: me.coins >= 40 && !hasCopperMine },
+                        { type: 'silver_mine', icon: '🪨', name: 'Silver Mine', stat: '+6 🪙/sec', cost: 120, oneUse: false, ok: me.coins >= 120 && !hasSilverMine },
+                        { type: 'gold_mine', icon: '✨', name: 'Gold Mine', stat: '+15 🪙/sec', cost: 300, oneUse: false, ok: me.coins >= 300 && !hasGoldMine },
+                    ],
+                    defence: [
+                        { type: 'grenade_launcher', icon: '💣', name: 'Grenade', stat: 'Big AoE blast', cost: 200, oneUse: true, ok: me.coins >= 200 && !r._hasGrenadeLauncher },
+                        { type: 'door_shield', icon: '🛡️', name: 'Gate Shield', stat: '+30% HP at 30% gate · 1×', cost: 250, oneUse: true, ok: me.coins >= 250 && !r._hasShield },
+                        { type: 'ghost_net', icon: '🕸️', name: 'Ghost Net', stat: 'Stuns ghost 3s · 1× use', cost: 350, oneUse: true, ok: me.coins >= 350 && !r._hasGhostNet },
+                    ],
+                };
+
+                const tabLabels = { basic: '⚙ BASIC', money: '💰 MONEY', defence: '🗡 DEFENCE' };
+                const tabAccents = { basic: 'rgba(56,189,248,', money: 'rgba(251,191,36,', defence: 'rgba(239,68,68,' };
+
+                function renderTab(key) {
+                    document.querySelectorAll('.sec-tab').forEach(t => {
+                        const active = t.dataset.sec === key;
+                        t.style.background = active ? tabAccents[t.dataset.sec] + '0.18)' : 'rgba(0,0,0,0.25)';
+                        t.style.borderColor = active ? tabAccents[t.dataset.sec] + '0.55)' : 'rgba(255,255,255,0.08)';
+                        t.style.color = active ? '#fff' : 'rgba(180,200,240,0.45)';
+                    });
+                    const grid = document.getElementById('build-section');
+                    grid.innerHTML = sections[key].map(it => `
+                <div class="build-row${it.ok ? '' : ' disabled'}" onclick="${it.ok ? `doBuild('${it.type}')` : ''}">
+                    <div class="bicon">${it.icon}</div>
+                    <div class="binfo">
+                        <div class="bname">${it.name}</div>
+                        <div class="bstat">${it.stat}</div>
+                        ${it.oneUse ? '<div class="bone">⚠ ONE TIME USE</div>' : ''}
+                    </div>
+                    <div class="bcost">${it.ok ? `🪙${it.cost}` : '<span style="font-size:10px;color:#ef4444">N/A</span>'}</div>
+                </div>`).join('');
+                }
+
+                content.innerHTML = `
+            <div class="sec-tabs">
+                ${Object.keys(sections).map(k => `<button class="sec-tab" data-sec="${k}" onclick="window._btab('${k}')">${tabLabels[k]}</button>`).join('')}
+            </div>
+            <div class="build-section" id="build-section"></div>`;
+
+                window._btab = renderTab;
+                renderTab('basic');
+
+            } else {
+                // Upgrade view
+                const obj = tileInfo.obj;
+                const lvl = obj.level;
+                const r = rooms[tileInfo.roomIdx];
+                let name = '', icon = '', stat1 = '', stat2 = '', cCost = 0;
+
+                if (tileInfo.type === 'bed') { name = 'Bed'; icon = '🛏️'; stat1 = `+${BED_INCOME[lvl - 1] || 1}/s`; if (lvl < 12) { stat2 = `→ +${BED_INCOME[lvl]}/s`; cCost = BED_COSTS[lvl]; } }
+                else if (tileInfo.type === 'door') { name = 'Gate'; icon = '🚪'; stat1 = `HP: ${DOOR_HPS[Math.max(0, lvl - 1)]}`; if (lvl < 12) { stat2 = `→ HP: ${DOOR_HPS[lvl]}`; cCost = DOOR_COSTS[lvl]; } }
+                else if (tileInfo.type === 'turret') { name = 'Turret'; icon = '🔫'; stat1 = `Dmg: ${TURRET_DMG[lvl - 1]}`; if (lvl < 12) { stat2 = `→ Dmg: ${TURRET_DMG[lvl]}`; cCost = TURRET_COSTS[lvl]; } }
+                else if (tileInfo.type === 'generator') { name = 'Generator'; icon = '⚡'; stat1 = `+${GEN_INCOME[lvl - 1]} ⚡/s`; if (lvl < 12) { stat2 = `→ +${GEN_INCOME[lvl]} ⚡/s`; cCost = GEN_COSTS[lvl]; } }
+                else if (tileInfo.type === 'mine') {
+                    const cfg = { copper: { icon: '⛏️', name: 'Copper Mine', income: MINE_INCOME.copper }, silver: { icon: '🪨', name: 'Silver Mine', income: MINE_INCOME.silver }, gold: { icon: '✨', name: 'Gold Mine', income: MINE_INCOME.gold } }[obj.type];
+                    name = cfg.name; icon = cfg.icon; stat1 = `+${cfg.income[lvl - 1] || 0}/s`;
+                    const mineCosts = { copper: [40, 100, 250, 600, 1200, 2500], silver: [120, 300, 750, 1800, 3500, 7000], gold: [300, 750, 1800, 4000, 8000, 16000] };
+                    if (lvl < 6) { stat2 = `→ +${cfg.income[lvl]}/s`; cCost = (mineCosts[obj.type] || [])[lvl] || 0; }
+                }
+
+                title.textContent = `${name} Lv.${lvl}`;
+                const me2 = gameState?.players?.[socket.id];
+                const canAfford = me2 && cCost > 0 && me2.coins >= cCost;
+
+                if (lvl >= 12 || cCost === 0) {
+                    content.innerHTML = `<div style="text-align:center;padding:28px 0;"><div style="font-size:52px;margin-bottom:10px;">${icon}</div><div style="font-family:'Orbitron',monospace;color:#22c55e;font-size:14px;font-weight:700;letter-spacing:2px;">MAX LEVEL</div></div>`;
+                } else {
+                    content.innerHTML = `
+            <div style="text-align:center;margin-bottom:14px;">
+                <div style="font-size:48px;margin-bottom:8px;">${icon}</div>
+                <div style="color:rgba(180,200,240,0.8);font-size:13px;">${stat1}</div>
+                <div style="color:#22c55e;font-size:12px;font-weight:700;margin-top:3px;">${stat2}</div>
+            </div>
+            <div style="background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:12px;margin-bottom:12px;">
+                <div style="font-family:'Orbitron',monospace;font-size:9px;letter-spacing:2px;color:rgba(150,170,220,0.6);margin-bottom:6px;">UPGRADE COST</div>
+                <span style="font-family:'Orbitron',monospace;font-size:14px;color:#fbbf24;font-weight:700;">🪙 ${cCost}</span>
+            </div>
+            <button onclick="doUpgrade()" class="upgrade-btn${canAfford ? '' : ' disabled'}">UPGRADE → LV.${lvl + 1}</button>`;
+                }
+            }
+        }
+
+        window.doBuild = function (type) {
+            if (!selectedTile || selectedTile.type !== 'empty') return;
+            socket.emit('player_build', { tileX: selectedTile.x, tileY: selectedTile.y, buildType: type }, (res) => {
+                if (res?.ok) { document.getElementById('action-panel').style.display = 'none'; selectedTile = null; }
+                else addFT(MAP_W / 2 * TILE_SIZE, MAP_H / 2 * TILE_SIZE, res?.reason || 'Cannot build', '#ef4444');
+            });
+        };
+
+        window.doUpgrade = function () {
+            if (!selectedTile || selectedTile.type === 'empty') return;
+            socket.emit('player_upgrade', { type: selectedTile.type, tileX: selectedTile.x, tileY: selectedTile.y }, (res) => {
+                if (res?.ok) openActionPanel(selectedTile); // refresh
+            });
+        };
+
+        document.getElementById('ap-close').onclick = () => { document.getElementById('action-panel').style.display = 'none'; selectedTile = null; };
+
+        // Canvas click → open build/upgrade
+        canvas.addEventListener('click', e => {
+            const me = gameState?.players?.[socket.id];
+            if (!me || me.state !== 'SLEEPING' || me.room === null) return;
+            const r = rooms[me.room];
+            if (!r) return;
+            const dcx = Math.max(0, Math.min(camX - W / 2, MAP_W * TILE_SIZE - W));
+            const dcy = Math.max(0, Math.min(camY - H / 2, MAP_H * TILE_SIZE - H));
+            const wx = e.clientX + dcx, wy = e.clientY + dcy;
+            const tx = Math.floor(wx / TILE_SIZE), ty = Math.floor(wy / TILE_SIZE);
+            if ((tx >= r.x && tx < r.x + r.w && ty >= r.y && ty < r.y + r.h) || (tx === r.door.x && ty === r.door.y)) {
+                const ti = { roomIdx: me.room, x: tx, y: ty, type: 'empty', obj: null };
+                if (tx === r.bed.x && ty === r.bed.y) { ti.type = 'bed'; ti.obj = r.bed; }
+                else if (tx === r.door.x && ty === r.door.y) { ti.type = 'door'; ti.obj = r.door; }
+                else {
+                    const tur = r.turrets.find(t => t.x === tx && t.y === ty);
+                    const gen = r.generators.find(t => t.x === tx && t.y === ty);
+                    const mine = r.mines.find(t => t.x === tx && t.y === ty);
+                    if (tur) { ti.type = 'turret'; ti.obj = tur; }
+                    else if (gen) { ti.type = 'generator'; ti.obj = gen; }
+                    else if (mine) { ti.type = 'mine'; ti.obj = mine; }
+                }
+                openActionPanel(ti);
+            } else {
+                document.getElementById('action-panel').style.display = 'none'; selectedTile = null;
+            }
+        });
+
+        // ── PLAYER LIST UI ───────────────────────────────────────────────
+        function buildPlayerListUI(players) {
+            const cont = document.getElementById('player-list-ui');
+            cont.innerHTML = '';
+            Object.values(players).forEach((p, i) => {
+                const el = document.createElement('div');
+                const col = p.isGhost ? '#ef4444' : p.color;
+                el.id = 'plbubble-' + p.id;
+                el.style.cssText = `position:relative;width:48px;height:48px;background:rgba(10,15,30,0.92);border:2px solid ${col};border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:transform .2s;flex-shrink:0;`;
+                el.innerHTML = `
+            <div style="position:absolute;top:-18px;font-family:'Orbitron',monospace;font-size:8px;font-weight:700;color:${col};white-space:nowrap;background:rgba(5,10,20,0.92);padding:1px 5px;border-radius:3px;border:1px solid ${col}40;">${p.name.length > 6 ? p.name.slice(0, 6) + '…' : p.name}</div>
+            <div style="font-size:18px;">${p.isGhost ? '👻' : '🧑'}</div>
+            <div id="pldead-${p.id}" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,0.75);border-radius:50%;align-items:center;justify-content:center;font-size:18px;color:#ef4444;font-weight:900;">✗</div>`;
+                el.onmouseenter = () => el.style.transform = 'scale(1.12)';
+                el.onmouseleave = () => el.style.transform = 'scale(1)';
+                el.onclick = () => { if (p.state !== 'DEAD') { camX = p.x; camY = p.y; } };
+                cont.appendChild(el);
+            });
+        }
+
+        function updatePlayerListUI() {
+            if (!gameState?.players) return;
+            Object.values(gameState.players).forEach(p => {
+                const dead = document.getElementById('pldead-' + p.id);
+                if (dead && p.state === 'DEAD') dead.style.display = 'flex';
+            });
+        }
+
+        // ── MINIMAP ───────────────────────────────────────────────────────
+        const mmCanvas = document.getElementById('minimap-canvas');
+        const mmCtx = mmCanvas.getContext('2d');
+        const MM_W = 160, MM_H = 160;
+
+        function drawMinimap() {
+            if (!map || !rooms || !gameState) return;
+            mmCtx.fillStyle = '#060b14';
+            mmCtx.fillRect(0, 0, MM_W, MM_H);
+
+            const scaleX = MM_W / MAP_W;
+            const scaleY = MM_H / MAP_H;
+
+            // Walls
+            for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) {
+                if (map[y][x] === 1) {
+                    mmCtx.fillStyle = '#1e293b';
+                    mmCtx.fillRect(x * scaleX, y * scaleY, scaleX + 0.5, scaleY + 0.5);
+                }
+            }
+
+            // Rooms
+            for (const r of rooms) {
+                mmCtx.fillStyle = r.owner ? 'rgba(180,100,20,0.4)' : 'rgba(100,60,20,0.25)';
+                mmCtx.fillRect(r.x * scaleX, r.y * scaleY, r.w * scaleX, r.h * scaleY);
+                // Door
+                const dpct = r.door.hp / r.door.maxHp;
+                mmCtx.fillStyle = dpct > 0.5 ? '#16a34a' : dpct > 0.25 ? '#f59e0b' : '#dc2626';
+                mmCtx.fillRect(r.door.x * scaleX, r.door.y * scaleY, scaleX + 0.5, scaleY + 0.5);
+            }
+
+            // Camera viewport box
+            const dcx = camX - W / 2, dcy = camY - H / 2;
+            mmCtx.strokeStyle = 'rgba(255,255,255,0.2)';
+            mmCtx.lineWidth = 1;
+            mmCtx.strokeRect(
+                Math.max(0, dcx / TILE_SIZE * scaleX),
+                Math.max(0, dcy / TILE_SIZE * scaleY),
+                Math.min(MM_W, W / TILE_SIZE * scaleX),
+                Math.min(MM_H, H / TILE_SIZE * scaleY)
+            );
+
+            // Players
+            for (const p of Object.values(gameState.players)) {
+                if (p.state === 'DEAD') continue;
+                const mx = p.x / TILE_SIZE * scaleX;
+                const my = p.y / TILE_SIZE * scaleY;
+                if (p.isGhost) {
+                    const isFrozen = gameState.ghostTimer > 0;
+                    mmCtx.fillStyle = isFrozen ? '#7dd3fc' : '#ef4444';
+                    mmCtx.beginPath(); mmCtx.arc(mx, my, 3.5, 0, Math.PI * 2); mmCtx.fill();
+                    // Red ring pulse
+                    if (!isFrozen) {
+                        const pulse = 0.4 + Math.abs(Math.sin(Date.now() / 300)) * 0.6;
+                        mmCtx.strokeStyle = `rgba(239,68,68,${pulse})`; mmCtx.lineWidth = 1.5;
+                        mmCtx.beginPath(); mmCtx.arc(mx, my, 5.5, 0, Math.PI * 2); mmCtx.stroke();
+                    }
+                } else {
+                    const isMe = p.id === socket.id;
+                    mmCtx.fillStyle = isMe ? '#ffffff' : (p.color || '#38bdf8');
+                    mmCtx.beginPath(); mmCtx.arc(mx, my, isMe ? 3 : 2, 0, Math.PI * 2); mmCtx.fill();
+                }
+            }
+        }
+
+        // ── GHOST ABILITY ─────────────────────────────────────────────────
+        window.ghostUseNet = function () {
+            socket.emit('player_use_net', (res) => {
+                if (!res?.ok) {
+                    const btn = document.getElementById('ga-net');
+                    btn.classList.add('disabled');
+                }
+            });
+        };
+
+        // ── GAME LOOP ─────────────────────────────────────────────────────
+        let lastTime = 0, gameLoopRunning = false;
+        function startGameLoop() {
+            if (gameLoopRunning) return;
+            gameLoopRunning = true;
+            lastTime = performance.now();
+            requestAnimationFrame(gameLoop);
+        }
+        function gameLoop(t) {
+            if (!gameLoopRunning) return;
+            const dt = Math.min((t - lastTime) / 1000, 0.1);
+            lastTime = t;
+
+            localMove(dt);
+            updateCamera(dt);
+            sendMyPosition(dt);
+
+            // particles + floatingTexts age
+            for (let i = particles.length - 1; i >= 0; i--) { let p = particles[i]; p.x += p.vx; p.y += p.vy; p.life -= dt; if (p.life <= 0) particles.splice(i, 1); }
+            for (let i = floatingTexts.length - 1; i >= 0; i--) { floatingTexts[i].life -= dt; if (floatingTexts[i].life <= 0) floatingTexts.splice(i, 1); }
+
+            draw();
+            drawMinimap();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // ── DRAW ─────────────────────────────────────────────────────────
+        function draw() {
+            if (!map || !rooms || !gameState) return;
+            // Camera is clamped to [W/2, mapW-W/2], so offset is camX - W/2
+            const dcx = Math.max(0, Math.min(camX - W / 2, MAP_W * TILE_SIZE - W));
+            const dcy = Math.max(0, Math.min(camY - H / 2, MAP_H * TILE_SIZE - H));
+
+            ctx.fillStyle = '#060b14'; ctx.fillRect(0, 0, W, H);
+            ctx.save(); ctx.translate(-dcx, -dcy);
+
+            const sc = Math.floor(dcx / TILE_SIZE), ec = sc + Math.ceil(W / TILE_SIZE) + 2;
+            const sr = Math.floor(dcy / TILE_SIZE), er = sr + Math.ceil(H / TILE_SIZE) + 2;
+
+            // MAP
+            for (let y = sr; y < er; y++) for (let x = sc; x < ec; x++) {
+                if (y < 0 || y >= MAP_H || x < 0 || x >= MAP_W) continue;
+                const t = map[y][x], px = x * TILE_SIZE, py = y * TILE_SIZE;
+                if (t === 1) {
+                    ctx.fillStyle = '#0f172a'; ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                    ctx.fillStyle = '#1e293b';
+                    const bW = TILE_SIZE / 2 - 2, bH = TILE_SIZE / 4 - 2;
+                    ctx.fillRect(px + 2, py + 2, bW, bH); ctx.fillRect(px + TILE_SIZE / 2 + 1, py + 2, bW, bH);
+                    ctx.fillRect(px + 2, py + TILE_SIZE / 4 + 1, TILE_SIZE - 4, bH);
+                    ctx.fillRect(px + 2, py + TILE_SIZE / 2 + 1, bW, bH); ctx.fillRect(px + TILE_SIZE / 2 + 1, py + TILE_SIZE / 2 + 1, bW, bH);
+                } else {
+                    ctx.fillStyle = ((x + y) % 2 === 0) ? '#0a0f1e' : '#0f1628'; ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                }
+            }
+
+            // ROOMS
+            for (let ri = 0; ri < rooms.length; ri++) {
+                const r = rooms[ri];
+                const rx = r.x * TILE_SIZE, ry = r.y * TILE_SIZE;
+                if (rx + r.w * TILE_SIZE < dcx || rx > dcx + W || ry + r.h * TILE_SIZE < dcy || ry > dcy + H) continue;
+
+                ctx.fillStyle = r.owner ? '#1a0f05' : '#0f0a05'; ctx.fillRect(rx, ry, r.w * TILE_SIZE, r.h * TILE_SIZE);
+
+                // Danger aura: pulse red when ghost is attacking or inside this room
+                const ghostPlayer = gameState && Object.values(gameState.players).find(p => p.isGhost);
+                const ghostTargetRoom = ghostPlayer && gameState.players[ghostPlayer.ghostTarget]?.room;
+                const isUnderAttack = ghostPlayer && ghostTargetRoom === ri &&
+                    (ghostPlayer.ghostState === 'ATTACKING' || ghostPlayer.ghostState === 'INSIDE' || ghostPlayer.ghostState === 'CROSSING');
+                if (isUnderAttack) {
+                    const danger = 0.15 + Math.abs(Math.sin(Date.now() / 150)) * 0.25;
+                    ctx.fillStyle = `rgba(239,68,68,${danger})`; ctx.fillRect(rx, ry, r.w * TILE_SIZE, r.h * TILE_SIZE);
+                    ctx.strokeStyle = `rgba(239,68,68,${danger * 2})`; ctx.lineWidth = 3;
+                    ctx.strokeRect(rx, ry, r.w * TILE_SIZE, r.h * TILE_SIZE);
+                }
+                ctx.strokeStyle = r.owner ? 'rgba(180,100,20,0.35)' : 'rgba(100,60,20,0.25)'; ctx.lineWidth = 1;
+                for (let i = 0; i <= r.w; i++) { ctx.beginPath(); ctx.moveTo(rx + i * TILE_SIZE, ry); ctx.lineTo(rx + i * TILE_SIZE, ry + r.h * TILE_SIZE); ctx.stroke(); }
+                for (let i = 0; i <= r.h; i++) { ctx.beginPath(); ctx.moveTo(rx, ry + i * TILE_SIZE); ctx.lineTo(rx + r.w * TILE_SIZE, ry + i * TILE_SIZE); ctx.stroke(); }
+
+                // Selected highlight
+                if (selectedTile && selectedTile.roomIdx === ri) {
+                    ctx.fillStyle = 'rgba(255,255,255,0.1)'; ctx.fillRect(selectedTile.x * TILE_SIZE, selectedTile.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                    ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 2; ctx.strokeRect(selectedTile.x * TILE_SIZE + 1, selectedTile.y * TILE_SIZE + 1, TILE_SIZE - 2, TILE_SIZE - 2);
+                }
+
+                // BED
+                const bx = r.bed.x * TILE_SIZE, by = r.bed.y * TILE_SIZE;
+                ctx.fillStyle = MAT_COLORS[r.bed.level] || '#78350f'; ctx.fillRect(bx + 2, by + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+                ctx.fillStyle = '#f8fafc'; ctx.fillRect(bx + 4, by + 4, TILE_SIZE - 8, TILE_SIZE - 8);
+                const bColor = r.owner ? (TIER_COLORS[r.bed.level] || '#3b82f6') : '#475569';
+                ctx.fillStyle = bColor; ctx.fillRect(bx + 4, by + TILE_SIZE / 3, TILE_SIZE - 8, TILE_SIZE * 2 / 3 - 4);
+                ctx.fillStyle = '#e2e8f0'; ctx.fillRect(bx + 8, by + 6, TILE_SIZE - 16, 12);
+
+                // MINES
+                for (const m of r.mines) {
+                    const mx = m.x * TILE_SIZE, my = m.y * TILE_SIZE;
+                    const mCol = { copper: '#b45309', silver: '#94a3b8', gold: '#eab308' }[m.type] || '#78350f';
+                    ctx.fillStyle = '#1c1917'; ctx.fillRect(mx + 3, my + 3, TILE_SIZE - 6, TILE_SIZE - 6);
+                    ctx.fillStyle = mCol; ctx.fillRect(mx + 6, my + 6, TILE_SIZE - 12, TILE_SIZE - 12);
+                    const pulse = 0.5 + Math.abs(Math.sin(Date.now() / 400 + m.x)) * 0.5;
+                    ctx.fillStyle = `rgba(255,255,255,${pulse * 0.25})`; ctx.beginPath(); ctx.arc(mx + TILE_SIZE / 2, my + TILE_SIZE / 2, 7, 0, Math.PI * 2); ctx.fill();
+                    ctx.fillStyle = '#fff'; ctx.font = '10px Arial'; ctx.textAlign = 'center';
+                    ctx.fillText({ copper: '⛏️', silver: '🪨', gold: '✨' }[m.type] || '?', mx + TILE_SIZE / 2, my + TILE_SIZE / 2 + 4);
+                    ctx.font = 'bold 9px Arial'; ctx.fillText(`Lv${m.level}`, mx + TILE_SIZE / 2, my + TILE_SIZE - 5);
+                }
+
+                // GENERATORS
+                for (const g of r.generators) {
+                    const cx = g.x * TILE_SIZE + TILE_SIZE / 2, cy = g.y * TILE_SIZE + TILE_SIZE / 2;
+                    ctx.fillStyle = MAT_COLORS[g.level] || '#475569'; ctx.fillRect(g.x * TILE_SIZE + 5, g.y * TILE_SIZE + 5, TILE_SIZE - 10, TILE_SIZE - 10);
+                    const pulse = Math.abs(Math.sin(Date.now() / 300));
+                    ctx.fillStyle = `rgba(34,211,238,${.4 + pulse * .6})`; ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill();
+                    ctx.fillStyle = '#fff'; ctx.font = 'bold 10px Arial'; ctx.textAlign = 'center'; ctx.fillText(`Lv${g.level}`, cx, cy - 12);
+                }
+
+                // TURRETS
+                for (const t of r.turrets) {
+                    const cx = t.x * TILE_SIZE + TILE_SIZE / 2, cy = t.y * TILE_SIZE + TILE_SIZE / 2;
+                    const tColor = TIER_COLORS[t.level] || '#ef4444';
+                    const br = 10 + Math.min(t.level, 12) * 0.6;
+                    ctx.fillStyle = MAT_COLORS[t.level] || '#334155'; ctx.beginPath(); ctx.arc(cx, cy, br, 0, Math.PI * 2); ctx.fill();
+                    ctx.strokeStyle = tColor; ctx.lineWidth = 2; ctx.stroke();
+                    ctx.save(); ctx.translate(cx, cy); ctx.rotate(t.angle || 0);
+                    const bl = 12 + t.level * 1.5, bw = 4 + Math.floor(t.level / 3) * 1.5;
+                    ctx.fillStyle = '#cbd5e1'; ctx.fillRect(2, -bw / 2, bl, bw);
+                    ctx.fillStyle = tColor; ctx.beginPath(); ctx.arc(0, 0, br * .7, 0, Math.PI * 2); ctx.fill();
+                    ctx.restore();
+                    ctx.fillStyle = '#fff'; ctx.font = 'bold 9px Arial'; ctx.textAlign = 'center'; ctx.fillText(`Lv${t.level}`, cx, cy - br - 5);
+                }
+
+                // Tool indicators
+                let tiY = ry - 18;
+                if (r._hasGrenadeLauncher) { ctx.font = '12px Arial'; ctx.textAlign = 'left'; ctx.fillText('💣', rx + 3, tiY + 12); tiY += 18; }
+                if (r._hasGhostNet) { ctx.fillText('🕸️', rx + 3, tiY + 12); tiY += 18; }
+                if (r._hasShield) { ctx.fillText('🛡️', rx + 3, tiY + 12); }
+
+                // DOOR
+                const ddx = r.door.x * TILE_SIZE, ddy = r.door.y * TILE_SIZE;
+                if (r.door.hp > 0) {
+                    let dColor = r.owner ? (r.door.level > 0 ? (MAT_COLORS[r.door.level] || '#ca8a04') : '#92400e') : '#d97706';
+                    // Flash white on hit
+                    if (r.door.hitTimer > 0) {
+                        const flash = r.door.hitTimer / 0.2;
+                        ctx.fillStyle = dColor; ctx.fillRect(ddx, ddy, TILE_SIZE, TILE_SIZE);
+                        ctx.fillStyle = `rgba(255,255,255,${flash * 0.9})`; ctx.fillRect(ddx, ddy, TILE_SIZE, TILE_SIZE);
+                        // Crack sparks when being attacked
+                        for (let sp = 0; sp < 4; sp++) {
+                            const sx = ddx + 4 + Math.random() * (TILE_SIZE - 8);
+                            const sy = ddy + 4 + Math.random() * (TILE_SIZE - 8);
+                            ctx.fillStyle = '#fbbf24'; ctx.fillRect(sx, sy, 3, 3);
+                        }
+                    } else {
+                        ctx.fillStyle = dColor; ctx.fillRect(ddx, ddy, TILE_SIZE, TILE_SIZE);
+                    }
+                    // Door planks texture
+                    if (r.owner) {
+                        ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1.5;
+                        for (let pi = 1; pi < 3; pi++) {
+                            ctx.beginPath(); ctx.moveTo(ddx, ddy + pi * (TILE_SIZE / 3)); ctx.lineTo(ddx + TILE_SIZE, ddy + pi * (TILE_SIZE / 3)); ctx.stroke();
+                        }
+                        ctx.beginPath(); ctx.moveTo(ddx + TILE_SIZE / 2, ddy); ctx.lineTo(ddx + TILE_SIZE / 2, ddy + TILE_SIZE); ctx.stroke();
+                    }
+                    // Shield pulse
+                    if (r.door.shieldActive || r._hasShield) {
+                        ctx.strokeStyle = `rgba(96,165,250,${0.5 + Math.sin(Date.now() / 200) * 0.5})`; ctx.lineWidth = 3;
+                        ctx.strokeRect(ddx + 2, ddy + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+                        ctx.fillStyle = `rgba(96,165,250,0.08)`; ctx.fillRect(ddx, ddy, TILE_SIZE, TILE_SIZE);
+                    }
+                    // HP bar above door
+                    if (r.owner) {
+                        ctx.fillStyle = 'rgba(0,0,0,0.8)'; ctx.fillRect(ddx, ddy - 12, TILE_SIZE, 8);
+                        const hpPct = r.door.hp / r.door.maxHp;
+                        ctx.fillStyle = hpPct > 0.5 ? '#16a34a' : hpPct > 0.25 ? '#f59e0b' : '#dc2626';
+                        ctx.fillRect(ddx + 1, ddy - 11, (TILE_SIZE - 2) * hpPct, 6);
+                    }
+                } else {
+                    // Broken door — rubble effect
+                    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(ddx, ddy, TILE_SIZE, TILE_SIZE);
+                    // Rubble chunks
+                    const rubbleSeeds = [[8, 6, 12, 8], [22, 10, 10, 7], [6, 22, 14, 6], [26, 18, 10, 9], [14, 28, 10, 8], [4, 34, 8, 6]];
+                    for (const [rx2, ry2, rw2, rh2] of rubbleSeeds) {
+                        ctx.fillStyle = '#44403c'; ctx.fillRect(ddx + rx2, ddy + ry2, rw2, rh2);
+                        ctx.fillStyle = '#57534e'; ctx.fillRect(ddx + rx2 + 1, ddy + ry2 + 1, rw2 - 2, 2);
+                    }
+                    // Red glow on broken door = ghost can enter
+                    const brokenPulse = 0.3 + Math.abs(Math.sin(Date.now() / 400)) * 0.3;
+                    ctx.fillStyle = `rgba(239,68,68,${brokenPulse})`; ctx.fillRect(ddx, ddy, TILE_SIZE, TILE_SIZE);
+                }
+            }
+
+            // PLAYERS
+            for (const p of Object.values(gameState.players)) {
+                if (p.state === 'DEAD') continue;
+                drawEntity(p);
+            }
+
+            // PARTICLES
+            for (const p of particles) {
+                ctx.fillStyle = p.color; ctx.globalAlpha = p.life / p.maxLife;
+                ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+
+            // FLOATING TEXTS
+            for (const ft of floatingTexts) {
+                ctx.globalAlpha = ft.life / ft.maxLife;
+                ctx.font = 'bold 15px Orbitron,Arial'; ctx.textAlign = 'center';
+                ctx.shadowColor = 'rgba(0,0,0,0.9)'; ctx.shadowBlur = 6; ctx.lineWidth = 3;
+                ctx.strokeStyle = 'rgba(0,0,0,0.8)'; ctx.strokeText(ft.text, ft.x, ft.y - (1 - ft.life / ft.maxLife) * 30);
+                ctx.fillStyle = ft.color; ctx.fillText(ft.text, ft.x, ft.y - (1 - ft.life / ft.maxLife) * 30);
+                ctx.shadowBlur = 0;
+            }
+            ctx.globalAlpha = 1;
+            ctx.restore(); // ← end world-space transform
+
+            // Ghost-player overlay: red vignette + state label (screen space)
+            const myData = gameState?.players?.[socket.id];
+            if (myData?.isGhost && myData.state !== 'DEAD') {
+                // Red vignette edges
+                const vign = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.85);
+                vign.addColorStop(0, 'rgba(0,0,0,0)');
+                vign.addColorStop(1, 'rgba(180,0,0,0.35)');
+                ctx.fillStyle = vign; ctx.fillRect(0, 0, W, H);
+                // Ghost state badge
+                const stateLabels = { WAITING: '❄ FROZEN', HUNTING: '👁 HUNTING', APPROACHING_DOOR: '🏃 APPROACHING', ATTACKING: '💥 ATTACKING DOOR', CROSSING: '🌀 ENTERING', INSIDE: '🩸 INSIDE' };
+                const stateColors = { WAITING: '#7dd3fc', HUNTING: '#fbbf24', APPROACHING_DOOR: '#fb923c', ATTACKING: '#ef4444', CROSSING: '#a855f7', INSIDE: '#dc2626' };
+                const sLabel = stateLabels[myData.ghostState] || myData.ghostState;
+                const sColor = stateColors[myData.ghostState] || '#fff';
+                ctx.font = 'bold 13px Orbitron,monospace'; ctx.textAlign = 'center';
+                const sw = ctx.measureText(sLabel).width + 24;
+                ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.beginPath();
+                ctx.roundRect(W / 2 - sw / 2, H - 54, sw, 28, 6); ctx.fill();
+                ctx.fillStyle = sColor; ctx.fillText(sLabel, W / 2, H - 35);
+                if (myData.ghostStunTimer > 0) {
+                    ctx.fillStyle = 'rgba(100,200,255,0.25)'; ctx.fillRect(0, 0, W, H);
+                    ctx.font = 'bold 18px Orbitron,monospace'; ctx.fillStyle = '#7dd3fc'; ctx.textAlign = 'center';
+                    ctx.fillText(`🕸️ STUNNED ${myData.ghostStunTimer.toFixed(1)}s`, W / 2, H / 2 - 20);
+                }
+            }
+        }  // end draw()
+
+        function drawEntity(p) {
+            const isMe = p.id === socket.id;
+            const isFrozen = p.isGhost && gameState && gameState.ghostTimer > 0;
+
+            ctx.save(); ctx.translate(p.x, p.y);
+
+            if (p.isGhost) {
+                // Stun ring (ghost net)
+                if (p.ghostStunTimer > 0) {
+                    ctx.strokeStyle = `rgba(100,200,255,0.7)`; ctx.lineWidth = 3;
+                    ctx.beginPath(); ctx.arc(0, 0, 28, 0, Math.PI * 2); ctx.stroke();
+                }
+
+                // Frozen cage effect while waiting
+                if (isFrozen) {
+                    ctx.globalAlpha = 0.5;
+                    // Pulsing ice cage
+                    const pulse = 0.5 + Math.abs(Math.sin(Date.now() / 300)) * 0.5;
+                    ctx.strokeStyle = `rgba(120,200,255,${0.4 + pulse * 0.5})`; ctx.lineWidth = 2;
+                    for (let i = 0; i < 4; i++) {
+                        ctx.beginPath();
+                        ctx.arc(0, 0, 22 + i * 6, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                    // Countdown text above
+                    ctx.globalAlpha = 1;
+                    ctx.font = 'bold 11px Orbitron,monospace'; ctx.textAlign = 'center';
+                    ctx.fillStyle = '#7dd3fc';
+                    ctx.fillText(`❄ ${Math.ceil(gameState.ghostTimer)}s`, 0, -38);
+                }
+
+                // Ghost glow
+                const glow = ctx.createRadialGradient(0, 0, 10, 0, 0, 40);
+                glow.addColorStop(0, isFrozen ? 'rgba(100,180,255,0.4)' : 'rgba(239,68,68,0.6)');
+                glow.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(0, 0, 40, 0, Math.PI * 2); ctx.fill();
+
+                // Ghost body
+                ctx.fillStyle = isFrozen ? '#1e40af' : '#991b1b';
+                ctx.beginPath(); ctx.arc(0, -10, 20, Math.PI, 0);
+                ctx.lineTo(20, 22);
+                for (let i = 1; i <= 4; i++) { const wx = 20 - (i * 10), wy = 22 + Math.sin((Date.now() / 200) + i) * 5; ctx.lineTo(wx, wy); }
+                ctx.lineTo(-20, 22); ctx.closePath(); ctx.fill();
+
+                // Eyes
+                ctx.fillStyle = isFrozen ? '#93c5fd' : '#fde047';
+                ctx.beginPath(); ctx.ellipse(-6, -12, 4, 2, 0, 0, Math.PI * 2); ctx.fill();
+                ctx.beginPath(); ctx.ellipse(6, -12, 4, 2, 0, 0, Math.PI * 2); ctx.fill();
+
+                ctx.globalAlpha = 1;
+                ctx.restore();
+
+                // HP bar (only show when not frozen)
+                if (!isFrozen) {
+                    ctx.fillStyle = 'rgba(0,0,0,0.8)'; ctx.fillRect(p.x - 24, p.y - 50, 48, 8);
+                    ctx.fillStyle = '#ef4444'; ctx.fillRect(p.x - 23, p.y - 49, 46 * (Math.max(0, p.hp) / p.maxHp), 6);
+                }
+                ctx.fillStyle = isFrozen ? '#7dd3fc' : '#fca5a5';
+                ctx.font = 'bold 10px Orbitron,monospace'; ctx.textAlign = 'center';
+                ctx.fillText(`👻 ${p.name}`, p.x, p.y - 54);
+                return;
+            }
+
+            if (p.state === 'SLEEPING') {
+                ctx.fillStyle = '#fca5a5'; ctx.beginPath(); ctx.arc(0, -8, 7, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = '#fff'; ctx.font = 'bold 14px Arial'; ctx.textAlign = 'center'; ctx.fillText('Z', 8, -15);
+            } else {
+                ctx.rotate(p.facing || 0);
+                ctx.fillStyle = p.color || '#38bdf8'; ctx.beginPath(); ctx.arc(-2, 0, 10, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(2, 0, 10, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = '#fca5a5'; ctx.beginPath(); ctx.arc(4, 0, 8, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = isMe ? '#0f172a' : '#78350f'; ctx.beginPath(); ctx.arc(3, 0, 8.5, Math.PI / 2, Math.PI * 1.5); ctx.fill();
+                ctx.fillStyle = '#0f172a'; ctx.beginPath(); ctx.arc(8, -3, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(8, 3, 1.5, 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.restore();
+
+            // Name tag
+            ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(p.x - 22, p.y - 32, 44, 14);
+            ctx.font = 'bold 9px Orbitron,monospace'; ctx.textAlign = 'center';
+            ctx.fillStyle = isMe ? '#38bdf8' : 'rgba(200,210,240,0.9)';
+            ctx.fillText(p.name.length > 7 ? p.name.slice(0, 7) + '…' : p.name, p.x, p.y - 22);
+        }
+    </script>
+</body>
+
+</html>
