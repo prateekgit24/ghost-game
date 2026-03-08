@@ -1,3 +1,1223 @@
+// ================================================================
+//  Ghost Killer — Server-Authoritative Game State
+//
+//  GHOST RULES (strictly enforced):
+//  1. Ghost is frozen for 25 seconds at start (ghostState = WAITING)
+//  2. Ghost cannot pass through ANY wall (tile=1) ever
+//  3. Ghost cannot pass through ANY intact door (tile=2, hp>0) ever
+//  4. Ghost must destroy a door (reduce hp to 0) before entering
+//  5. BFS pathfinding treats all intact doors as unwalkable
+//  6. Every single ghost position update goes through moveWithCollision
+//
+//  FIXES APPLIED:
+//  - _applyGhostPlayerInput: added full kill logic, door attack logic,
+//    XP gain, and level-up — these were completely missing for human ghost.
+//  - playerUpgrade: returns updated obj so client always gets fresh state.
+// ================================================================
+
+const TILE_SIZE = 48;
+const MAP_W = 60;
+const MAP_H = 60;
+const NUM_ROOMS = 18;
+const ENTITY_RADIUS = 14;   // survivor collision radius
+const GHOST_RADIUS = 16;    // ghost collision radius
+
+const DOOR_HPS = [100, 300, 800, 2000, 5000, 12000, 25000, 50000, 100000, 250000, 500000, 1000000];
+const BED_INCOME = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048];
+const TURRET_DMG = [10, 25, 60, 150, 400, 1000, 2500, 5000, 12000, 25000, 60000, 150000];
+const TURRET_RNG = [250, 275, 300, 325, 350, 375, 400, 425, 450, 475, 500, 550];
+const GEN_INCOME = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048];
+const MINE_INCOME = {
+    copper: [2, 4, 8, 16, 32, 64],
+    silver: [6, 12, 24, 48, 96, 192],
+    gold: [15, 30, 60, 120, 240, 480],
+};
+const PLAYER_COLORS = ['#38bdf8', '#a3e635', '#f472b6', '#fbbf24', '#c084fc', '#2dd4bf', '#fb923c'];
+
+const ghostSpots = [
+    { x: Math.floor(MAP_W / 2), y: 2 },
+    { x: Math.floor(MAP_W / 2), y: MAP_H - 3 },
+    { x: 2, y: Math.floor(MAP_H / 2) },
+    { x: MAP_W - 3, y: Math.floor(MAP_H / 2) },
+];
+
+function dist(x1, y1, x2, y2) {
+    return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+}
+
+// ─── MAP GENERATION ──────────────────────────────────────────────
+function generateMap() {
+    const map = [];
+    for (let y = 0; y < MAP_H; y++) {
+        map[y] = [];
+        for (let x = 0; x < MAP_W; x++) map[y][x] = 0;
+    }
+    for (let y = 0; y < MAP_H; y++)
+        for (let x = 0; x < MAP_W; x++)
+            if (x < 4 || x >= MAP_W - 4 || y < 4 || y >= MAP_H - 4) map[y][x] = 1;
+
+    const cx = Math.floor(MAP_W / 2), cy = Math.floor(MAP_H / 2);
+    for (let y = 1; y < 4; y++)
+        for (let x = cx - 1; x <= cx + 1; x++) map[y][x] = 0;
+    for (let y = MAP_H - 4; y < MAP_H - 1; y++)
+        for (let x = cx - 1; x <= cx + 1; x++) map[y][x] = 0;
+    for (let x = 1; x < 4; x++)
+        for (let y = cy - 1; y <= cy + 1; y++) map[y][x] = 0;
+    for (let x = MAP_W - 4; x < MAP_W - 1; x++)
+        for (let y = cy - 1; y <= cy + 1; y++) map[y][x] = 0;
+
+    return map;
+}
+
+function generateRooms(map) {
+    const rooms = [];
+    const cx = Math.floor(MAP_W / 2), cy = Math.floor(MAP_H / 2);
+    let attempts = 0;
+
+    while (rooms.length < NUM_ROOMS && attempts < 2000) {
+        attempts++;
+        const rw = Math.floor(Math.random() * 5) + 5;
+        const rh = Math.floor(Math.random() * 5) + 5;
+        const rx = Math.floor(Math.random() * (MAP_W - rw - 12)) + 6;
+        const ry = Math.floor(Math.random() * (MAP_H - rh - 12)) + 6;
+
+        let overlap = false;
+        if (rx < cx + 7 && rx + rw > cx - 7 && ry < cy + 7 && ry + rh > cy - 7) overlap = true;
+        if (!overlap)
+            for (const r of rooms)
+                if (rx < r.x + r.w + 3 && rx + rw + 3 > r.x &&
+                    ry < r.y + r.h + 3 && ry + rh + 3 > r.y) { overlap = true; break; }
+        if (overlap) continue;
+
+        for (let y = ry - 1; y <= ry + rh; y++)
+            for (let x = rx - 1; x <= rx + rw; x++)
+                if (x === rx - 1 || x === rx + rw || y === ry - 1 || y === ry + rh)
+                    map[y][x] = 1;
+
+        const doorSide = Math.floor(Math.random() * 4);
+        let ddx, ddy;
+        if (doorSide === 0) { ddx = rx + Math.floor(rw / 2); ddy = ry - 1; }
+        else if (doorSide === 1) { ddx = rx + Math.floor(rw / 2); ddy = ry + rh; }
+        else if (doorSide === 2) { ddx = rx - 1; ddy = ry + Math.floor(rh / 2); }
+        else { ddx = rx + rw; ddy = ry + Math.floor(rh / 2); }
+        map[ddy][ddx] = 2;
+
+        let bx = rx + Math.floor(rw / 2), by = ry + Math.floor(rh / 2);
+        if (doorSide === 0) by = ry + rh - 2;
+        else if (doorSide === 1) by = ry + 1;
+        else if (doorSide === 2) bx = rx + rw - 2;
+        else bx = rx + 1;
+
+        rooms.push({
+            id: rooms.length, x: rx, y: ry, w: rw, h: rh,
+            door: {
+                x: ddx, y: ddy,
+                hp: DOOR_HPS[0], maxHp: DOOR_HPS[0],
+                level: 0, hitTimer: 0,
+                shieldActive: false, shieldUsed: false,
+            },
+            bed: { x: bx, y: by, level: 0 },
+            turrets: [], generators: [], mines: [],
+            owner: null,
+            _hasGrenadeLauncher: false,
+            _hasGhostNet: false,
+            _hasShield: false,
+            _hasRepairTool: false,
+        });
+    }
+    return rooms;
+}
+
+// ─── COLLISION ────────────────────────────────────────────────────
+function tileBlocks(map, rooms, tx, ty) {
+    if (tx < 0 || tx >= MAP_W || ty < 0 || ty >= MAP_H) return true;
+    if (map[ty][tx] === 1) return true;
+    if (map[ty][tx] === 2) {
+        const room = rooms.find(r => r.door.x === tx && r.door.y === ty);
+        if (!room) return false;
+        return room.door.hp > 0;
+    }
+    return false;
+}
+
+function checkWallCollision(map, rooms, nx, ny, radius) {
+    const r = radius - 2;
+    const pts = [
+        { x: nx - r, y: ny - r }, { x: nx, y: ny - r }, { x: nx + r, y: ny - r },
+        { x: nx - r, y: ny }, { x: nx + r, y: ny },
+        { x: nx - r, y: ny + r }, { x: nx, y: ny + r }, { x: nx + r, y: ny + r },
+    ];
+    for (const p of pts)
+        if (tileBlocks(map, rooms, Math.floor(p.x / TILE_SIZE), Math.floor(p.y / TILE_SIZE)))
+            return true;
+    return false;
+}
+
+function moveWithCollision(map, rooms, x, y, vx, vy, speed, dt, radius) {
+    const STEPS = 6;
+    let nx = x, ny = y;
+    const dx = (vx * speed * dt) / STEPS;
+    const dy = (vy * speed * dt) / STEPS;
+    for (let i = 0; i < STEPS; i++) {
+        if (!checkWallCollision(map, rooms, nx + dx, ny, radius)) nx += dx;
+        if (!checkWallCollision(map, rooms, nx, ny + dy, radius)) ny += dy;
+    }
+    return { x: nx, y: ny };
+}
+
+function validateClientPos(map, rooms, sx, sy, cx, cy, radius) {
+    if (!checkWallCollision(map, rooms, cx, cy, radius)) return { x: cx, y: cy };
+    return { x: sx, y: sy };
+}
+
+// ─── BFS ─────────────────────────────────────────────────────────
+function getPathNextNode(map, rooms, sx, sy, tx, ty) {
+    if (sx === tx && sy === ty) return null;
+    const visited = new Uint8Array(MAP_W * MAP_H);
+    const queue = [{ x: sx, y: sy, path: [] }];
+    visited[sy * MAP_W + sx] = 1;
+    const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    let steps = 0;
+
+    while (queue.length > 0 && steps++ < 5000) {
+        const curr = queue.shift();
+        if (curr.x === tx && curr.y === ty) return curr.path[0] || null;
+        for (const [ddx, ddy] of dirs) {
+            const nx = curr.x + ddx, ny = curr.y + ddy;
+            if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H || visited[ny * MAP_W + nx]) continue;
+            visited[ny * MAP_W + nx] = 1;
+            const isDest = (nx === tx && ny === ty);
+            let walkable = true;
+            if (map[ny][nx] === 1) {
+                walkable = false;
+            } else if (map[ny][nx] === 2 && !isDest) {
+                walkable = false;
+            }
+            if (walkable)
+                queue.push({ x: nx, y: ny, path: curr.path.concat({ x: nx, y: ny }) });
+        }
+    }
+    return null;
+}
+
+// ─── SERVER GAME ─────────────────────────────────────────────────
+class ServerGame {
+    constructor(roomId, playerList) {
+        this.roomId = roomId;
+        this.map = generateMap();
+        this.rooms = generateRooms(this.map);
+        this.players = {};
+        this.ghost = null;
+        this.ghostIsBot = false;
+        this.ghostTimer = 25;
+        this.gameOver = false;
+        this.winner = null;
+        this.startTime = Date.now();
+
+        const ids = playerList.map(p => p.id);
+        const ghostId = ids[Math.floor(Math.random() * ids.length)];
+        const cx = Math.floor(MAP_W / 2) * TILE_SIZE + TILE_SIZE / 2;
+        const cy = Math.floor(MAP_H / 2) * TILE_SIZE + TILE_SIZE / 2;
+        const sp = ghostSpots[Math.floor(Math.random() * ghostSpots.length)];
+
+        playerList.forEach((p, i) => {
+            const isGhost = p.id === ghostId;
+            this.players[p.id] = {
+                id: p.id, name: p.name,
+                color: isGhost ? '#ef4444' : PLAYER_COLORS[i % PLAYER_COLORS.length],
+                isGhost,
+                x: isGhost ? sp.x * TILE_SIZE + TILE_SIZE / 2 : cx + (Math.random() - .5) * 100,
+                y: isGhost ? sp.y * TILE_SIZE + TILE_SIZE / 2 : cy + (Math.random() - .5) * 100,
+                vx: 0, vy: 0, facing: 0,
+                speed: isGhost ? 130 : 220,
+                state: 'ROAMING',
+                hp: isGhost ? 1000 : 100,
+                maxHp: isGhost ? 1000 : 100,
+                coins: isGhost ? 0 : 50,
+                energy: 0, room: null,
+                // ghost-only
+                ghostLevel: 1, ghostXp: 0, ghostAttackTimer: 0,
+                ghostState: 'WAITING', ghostTarget: null,
+                ghostPathTimer: 0, _ghostPathCache: null, ghostStunTimer: 0,
+                // survivor-only
+                repairActive: false, repairActiveTimer: 0, repairCooldown: 0,
+                _resourceTimer: 0,
+            };
+        });
+        this.ghost = Object.values(this.players).find(p => p.isGhost);
+    }
+
+    // ─── MAIN TICK ───────────────────────────────────────────────
+    tick(dt) {
+        if (this.gameOver) return null;
+
+        // Ghost countdown
+        if (this.ghostTimer > 0) {
+            this.ghostTimer = Math.max(0, this.ghostTimer - dt);
+            if (this.ghostTimer <= 0 && this.ghost) {
+                this.ghostTimer = 0;
+                this.ghost.ghostState = 'HUNTING';
+            }
+        }
+
+        // Survivor resources + repair
+        for (const p of Object.values(this.players)) {
+            if (p.isGhost || p.state === 'DEAD') continue;
+            if (p.state === 'SLEEPING' && p.room !== null) {
+                const room = this.rooms[p.room];
+                if (!room) continue;
+
+                p._resourceTimer += dt;
+                if (p._resourceTimer >= 1.0) {
+                    p._resourceTimer -= 1.0;
+                    let cInc = BED_INCOME[room.bed.level];
+                    for (const g of room.generators) cInc += GEN_INCOME[g.level - 1];
+                    for (const m of room.mines) {
+                        const arr = MINE_INCOME[m.type];
+                        cInc += arr[Math.min(m.level - 1, arr.length - 1)];
+                    }
+                    p.coins += cInc;
+                    p.energy += room.generators.reduce((s, g) => s + GEN_INCOME[g.level - 1], 0);
+                }
+
+                if (p.repairActive) {
+                    p.repairActiveTimer -= dt;
+                    const rate = (room._hasRepairTool ? 0.15 : 0.08) * room.door.maxHp * dt;
+                    room.door.hp = Math.min(room.door.maxHp, room.door.hp + rate);
+                    if (p.repairActiveTimer <= 0) {
+                        p.repairActive = false;
+                        p.repairCooldown = 60;
+                    }
+                }
+                if (p.repairCooldown > 0) p.repairCooldown = Math.max(0, p.repairCooldown - dt);
+            }
+        }
+
+        // Ghost movement
+        if (this.ghost && this.ghost.state !== 'DEAD') {
+            if (this.ghostTimer <= 0) {
+                if (this.ghostIsBot) {
+                    this._updateGhost(dt);
+                } else {
+                    this._applyGhostPlayerInput(dt);
+                }
+            }
+        }
+
+        this._updateTurrets(dt);
+
+        // Door hit-flash timers
+        for (const r of this.rooms)
+            if (r.door.hitTimer > 0) r.door.hitTimer -= dt;
+
+        // Win conditions
+        const aliveHumans = Object.values(this.players).filter(p => !p.isGhost && p.state !== 'DEAD');
+        if (aliveHumans.length === 0 && Object.keys(this.players).length > 1) {
+            this.gameOver = true; this.winner = 'ghost';
+        }
+        if (this.ghost && this.ghost.state === 'DEAD') {
+            this.gameOver = true; this.winner = 'survivors';
+        }
+
+        return this.getState();
+    }
+
+    // ─── GHOST AI STATE MACHINE ──────────────────────────────────
+    _updateGhost(dt) {
+        const g = this.ghost;
+        if (!g || g.state === 'DEAD') return;
+
+        if (g.ghostStunTimer > 0) { g.ghostStunTimer -= dt; return; }
+
+        // XP / level-up
+        const xpReq = g.ghostLevel * 200;
+        g.ghostXp += 5 * dt;
+        if (g.ghostXp >= xpReq) {
+            g.ghostXp -= xpReq; g.ghostLevel++;
+            g.maxHp = Math.floor(g.maxHp * 1.6);
+            g.hp = g.maxHp;
+            g.speed = Math.min(200, g.speed + 5);
+        }
+        if (g.ghostLevel >= 3 && g.hp < g.maxHp)
+            g.hp = Math.min(g.maxHp, g.hp + g.ghostLevel * 2 * dt);
+
+        // Pick target
+        const targets = Object.values(this.players).filter(p => !p.isGhost && p.state !== 'DEAD');
+        if (!targets.length) return;
+
+        const curTarget = g.ghostTarget && this.players[g.ghostTarget];
+        if (!curTarget || curTarget.state === 'DEAD') {
+            g.ghostTarget = targets.sort(
+                (a, b) => dist(g.x, g.y, a.x, a.y) - dist(g.x, g.y, b.x, b.y)
+            )[0].id;
+            g.ghostState = 'HUNTING';
+            g._ghostPathCache = null;
+        }
+
+        const tgt = this.players[g.ghostTarget];
+        if (!tgt || tgt.state === 'DEAD') { g.ghostTarget = null; g.ghostState = 'HUNTING'; return; }
+
+        // ── HUNTING ──────────────────────────────────────────────
+        if (g.ghostState === 'HUNTING') {
+            if (tgt.state === 'ROAMING') {
+                this._bfsMove(g, Math.floor(tgt.x / TILE_SIZE), Math.floor(tgt.y / TILE_SIZE), tgt.x, tgt.y, dt);
+                if (dist(g.x, g.y, tgt.x, tgt.y) < GHOST_RADIUS + ENTITY_RADIUS) {
+                    tgt.state = 'DEAD'; tgt.hp = 0;
+                    g.ghostXp += 150; g.ghostTarget = null;
+                }
+            } else if (tgt.room !== null) {
+                const room = this.rooms[tgt.room];
+                if (!room) { g.ghostTarget = null; return; }
+                const ap = this._approachTile(room);
+                this._bfsMove(g, ap.tx, ap.ty, ap.px, ap.py, dt);
+                if (dist(g.x, g.y, ap.px, ap.py) < TILE_SIZE * 1.5) {
+                    g.ghostState = 'APPROACHING_DOOR';
+                    g._ghostPathCache = null;
+                }
+            }
+        }
+
+        // ── APPROACHING_DOOR ─────────────────────────────────────
+        if (g.ghostState === 'APPROACHING_DOOR') {
+            if (tgt.room === null) { g.ghostState = 'HUNTING'; return; }
+            const room = this.rooms[tgt.room];
+            if (!room) { g.ghostState = 'HUNTING'; return; }
+            const ap = this._approachTile(room);
+            const dd = dist(g.x, g.y, ap.px, ap.py);
+            if (dd > 6) {
+                const a = Math.atan2(ap.py - g.y, ap.px - g.x);
+                const moved = moveWithCollision(this.map, this.rooms, g.x, g.y,
+                    Math.cos(a), Math.sin(a), g.speed * 0.6, dt, GHOST_RADIUS);
+                g.x = moved.x; g.y = moved.y; g.facing = a;
+            } else {
+                g.ghostState = 'ATTACKING';
+                g.ghostAttackTimer = 0;
+            }
+        }
+
+        // ── ATTACKING ────────────────────────────────────────────
+        if (g.ghostState === 'ATTACKING') {
+            if (tgt.room === null || tgt.state === 'DEAD') { g.ghostState = 'HUNTING'; return; }
+            const room = this.rooms[tgt.room];
+            if (!room) { g.ghostState = 'HUNTING'; return; }
+            const door = room.door;
+
+            if (door.hp <= 0) { g.ghostState = 'CROSSING'; g._ghostPathCache = null; return; }
+
+            g.ghostAttackTimer += dt;
+            if (g.ghostAttackTimer >= 0.4) {
+                g.ghostAttackTimer = 0;
+                const dmg = 30 + g.ghostLevel * 15;
+                door.hp -= dmg;
+                door.hitTimer = 0.2;
+                g.ghostXp += 30;
+                if (!door.shieldUsed && door.hp / door.maxHp < 0.3 && room._hasShield) {
+                    door.shieldActive = true; door.shieldUsed = true;
+                    door.hp = Math.min(door.hp + door.maxHp * 0.3, door.maxHp * 0.6);
+                    room._hasShield = false;
+                }
+                if (door.hp <= 0) {
+                    door.hp = 0;
+                    g.ghostXp += 200;
+                    g.ghostState = 'CROSSING';
+                    g._ghostPathCache = null;
+                }
+            }
+
+            const ap = this._approachTile(room);
+            if (dist(g.x, g.y, ap.px, ap.py) > 8) {
+                const a = Math.atan2(ap.py - g.y, ap.px - g.x);
+                const glue = moveWithCollision(this.map, this.rooms, g.x, g.y,
+                    Math.cos(a), Math.sin(a), g.speed * 0.2, dt, GHOST_RADIUS);
+                g.x = glue.x; g.y = glue.y;
+            }
+        }
+
+        // ── CROSSING ─────────────────────────────────────────────
+        if (g.ghostState === 'CROSSING') {
+            if (tgt.state === 'DEAD' || tgt.room === null) { g.ghostState = 'HUNTING'; return; }
+            const room = this.rooms[tgt.room];
+            if (!room) { g.ghostState = 'HUNTING'; return; }
+            if (room.door.hp > 0) { g.ghostState = 'ATTACKING'; g.ghostAttackTimer = 0; return; }
+
+            const gpx = room.door.x * TILE_SIZE + TILE_SIZE / 2;
+            const gpy = room.door.y * TILE_SIZE + TILE_SIZE / 2;
+            const dd = dist(g.x, g.y, gpx, gpy);
+            if (dd > 8) {
+                const a = Math.atan2(gpy - g.y, gpx - g.x);
+                const moved = moveWithCollision(this.map, this.rooms, g.x, g.y,
+                    Math.cos(a), Math.sin(a), g.speed * 1.4, dt, GHOST_RADIUS);
+                g.x = moved.x; g.y = moved.y; g.facing = a;
+            } else {
+                g.ghostState = 'INSIDE';
+                g.ghostAttackTimer = 0;
+            }
+        }
+
+        // ── INSIDE ───────────────────────────────────────────────
+        if (g.ghostState === 'INSIDE') {
+            if (tgt.state === 'DEAD' || tgt.room === null) {
+                g.ghostState = 'HUNTING'; g._ghostPathCache = null; return;
+            }
+            const dx = tgt.x - g.x, dy = tgt.y - g.y;
+            const dd = Math.sqrt(dx * dx + dy * dy);
+            if (dd > 2) {
+                const moved = moveWithCollision(this.map, this.rooms, g.x, g.y,
+                    dx / dd, dy / dd, g.speed, dt, GHOST_RADIUS);
+                g.x = moved.x; g.y = moved.y; g.facing = Math.atan2(dy, dx);
+            }
+            if (dd < GHOST_RADIUS + ENTITY_RADIUS + 6) {
+                g.ghostAttackTimer += dt;
+                if (g.ghostAttackTimer >= 0.4) {
+                    g.ghostAttackTimer = 0;
+                    const dmg = 30 + g.ghostLevel * 15;
+                    tgt.hp -= dmg;
+                    if (tgt.hp <= 0) {
+                        tgt.hp = 0; tgt.state = 'DEAD';
+                        g.ghostXp += 200;
+                        g.ghostTarget = null;
+                        g.ghostState = 'HUNTING';
+                        g._ghostPathCache = null;
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── HUMAN GHOST INPUT ───────────────────────────────────────
+    //
+    //  FIX: This method previously only moved the ghost.
+    //  It now also handles:
+    //    • Killing roaming survivors on contact
+    //    • Attacking doors when standing adjacent (range: 1.8 tiles)
+    //    • Killing sleeping survivors once their door is broken (hp=0)
+    //    • XP gain for all of the above
+    //    • Ghost level-up + regen (mirrors AI ghost logic)
+    //    • Stun handling (ghost net)
+    //
+    _applyGhostPlayerInput(dt) {
+        const g = this.ghost;
+        if (!g || g.state === 'DEAD' || this.ghostTimer > 0) return;
+
+        // Stun — ghost can't act while netted
+        if (g.ghostStunTimer > 0) {
+            g.ghostStunTimer -= dt;
+            return;
+        }
+
+        // ── Move (wall-colliding, identical to AI ghost) ──────────
+        const moved = moveWithCollision(
+            this.map, this.rooms,
+            g.x, g.y,
+            g.vx || 0, g.vy || 0,
+            g.speed, dt, GHOST_RADIUS
+        );
+        g.x = moved.x;
+        g.y = moved.y;
+
+        // ── Kill / interact with every living survivor ────────────
+        for (const p of Object.values(this.players)) {
+            if (p.isGhost || p.state === 'DEAD') continue;
+            const d = dist(g.x, g.y, p.x, p.y);
+
+            // ── Roaming survivor — instant kill on touch ──────────
+            if (p.state === 'ROAMING') {
+                if (d < GHOST_RADIUS + ENTITY_RADIUS) {
+                    p.state = 'DEAD';
+                    p.hp = 0;
+                    g.ghostXp += 200;
+                }
+                continue;  // roaming player has no door/room to attack
+            }
+
+            // ── Sleeping survivor ─────────────────────────────────
+            if (p.state === 'SLEEPING' && p.room !== null) {
+                const room = this.rooms[p.room];
+                if (!room) continue;
+
+                const door = room.door;
+                const doorPx = door.x * TILE_SIZE + TILE_SIZE / 2;
+                const doorPy = door.y * TILE_SIZE + TILE_SIZE / 2;
+                const doorDist = dist(g.x, g.y, doorPx, doorPy);
+
+                // Attack door if ghost is standing close to it AND door still has hp
+                if (door.hp > 0 && doorDist < TILE_SIZE * 1.8) {
+                    g.ghostAttackTimer = (g.ghostAttackTimer || 0) + dt;
+                    if (g.ghostAttackTimer >= 0.4) {
+                        g.ghostAttackTimer = 0;
+                        const dmg = 30 + g.ghostLevel * 15;
+                        door.hp -= dmg;
+                        door.hitTimer = 0.2;
+                        g.ghostXp += 30;
+
+                        // Shield trigger at 30% hp
+                        if (!door.shieldUsed &&
+                            door.hp / door.maxHp < 0.3 &&
+                            room._hasShield) {
+                            door.shieldActive = true;
+                            door.shieldUsed = true;
+                            door.hp = Math.min(
+                                door.hp + door.maxHp * 0.3,
+                                door.maxHp * 0.6
+                            );
+                            room._hasShield = false;
+                        }
+
+                        if (door.hp <= 0) {
+                            door.hp = 0;
+                            g.ghostXp += 200;  // bonus for breaking door
+                        }
+                    }
+                }
+
+                // Attack sleeping survivor only after their door is broken
+                if (door.hp <= 0 && d < GHOST_RADIUS + ENTITY_RADIUS + 6) {
+                    g.ghostAttackTimer = (g.ghostAttackTimer || 0) + dt;
+                    if (g.ghostAttackTimer >= 0.4) {
+                        g.ghostAttackTimer = 0;
+                        const dmg = 30 + g.ghostLevel * 15;
+                        p.hp -= dmg;
+                        if (p.hp <= 0) {
+                            p.hp = 0;
+                            p.state = 'DEAD';
+                            g.ghostXp += 200;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── XP / level-up (mirrors AI ghost) ─────────────────────
+        const xpReq = g.ghostLevel * 200;
+        if (g.ghostXp >= xpReq) {
+            g.ghostXp -= xpReq;
+            g.ghostLevel++;
+            g.maxHp = Math.floor(g.maxHp * 1.6);
+            g.hp = g.maxHp;
+            g.speed = Math.min(200, g.speed + 5);
+        }
+
+        // Passive regen at level 3+
+        if (g.ghostLevel >= 3 && g.hp < g.maxHp)
+            g.hp = Math.min(g.maxHp, g.hp + g.ghostLevel * 2 * dt);
+    }
+
+    // ─── BFS-guided movement ─────────────────────────────────────
+    _bfsMove(g, destTx, destTy, destPx, destPy, dt) {
+        const gTx = Math.floor(g.x / TILE_SIZE);
+        const gTy = Math.floor(g.y / TILE_SIZE);
+
+        g.ghostPathTimer = (g.ghostPathTimer || 0) + dt;
+        if (!g._ghostPathCache || g.ghostPathTimer > 0.4) {
+            g.ghostPathTimer = 0;
+            g._ghostPathCache = getPathNextNode(this.map, this.rooms, gTx, gTy, destTx, destTy);
+        }
+
+        let tpx = destPx, tpy = destPy;
+        if (g._ghostPathCache) {
+            tpx = g._ghostPathCache.x * TILE_SIZE + TILE_SIZE / 2;
+            tpy = g._ghostPathCache.y * TILE_SIZE + TILE_SIZE / 2;
+            if (dist(g.x, g.y, tpx, tpy) < TILE_SIZE * 0.6) g._ghostPathCache = null;
+        }
+
+        const a = Math.atan2(tpy - g.y, tpx - g.x);
+        const moved = moveWithCollision(this.map, this.rooms, g.x, g.y,
+            Math.cos(a), Math.sin(a), g.speed, dt, GHOST_RADIUS);
+        g.x = moved.x; g.y = moved.y; g.facing = a;
+    }
+
+    // Returns the tile + pixel coord one step outside a room's door
+    _approachTile(room) {
+        const { x: gx, y: gy } = room.door;
+        const { x: rx, y: ry, w, h } = room;
+        let tx, ty;
+        if (gy === ry - 1) { tx = gx; ty = gy - 1; }
+        else if (gy === ry + h) { tx = gx; ty = gy + 1; }
+        else if (gx === rx - 1) { tx = gx - 1; ty = gy; }
+        else { tx = gx + 1; ty = gy; }
+        return { tx, ty, px: tx * TILE_SIZE + TILE_SIZE / 2, py: ty * TILE_SIZE + TILE_SIZE / 2 };
+    }
+
+    // ─── TURRETS ─────────────────────────────────────────────────
+    _updateTurrets(dt) {
+        const g = this.ghost;
+        if (!g || g.state === 'DEAD' || g.ghostState === 'WAITING') return;
+        for (const room of this.rooms) {
+            if (!room.owner) continue;
+            const owner = this.players[room.owner];
+            if (!owner || owner.state === 'DEAD') continue;
+            for (const t of room.turrets) {
+                const ttx = t.x * TILE_SIZE + TILE_SIZE / 2;
+                const tty = t.y * TILE_SIZE + TILE_SIZE / 2;
+                const range = TURRET_RNG[t.level - 1];
+                const dg = dist(ttx, tty, g.x, g.y);
+                if (dg < range) t.angle = Math.atan2(g.y - tty, g.x - ttx);
+                t.lastFire = (t.lastFire || 0) + dt;
+                if (t.lastFire >= 0.8 && dg < range) {
+                    t.lastFire = 0;
+                    g.hp -= TURRET_DMG[t.level - 1];
+                    if (g.hp <= 0) {
+                        g.hp = 0; g.state = 'DEAD';
+                        this.gameOver = true; this.winner = 'survivors';
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── PLAYER ACTIONS ──────────────────────────────────────────
+    playerSleep(socketId, roomIdx) {
+        const p = this.players[socketId];
+        const room = this.rooms[roomIdx];
+        if (!p || !room || room.owner || p.state !== 'ROAMING') return false;
+        p.state = 'SLEEPING';
+        p.room = roomIdx;
+        p.x = room.bed.x * TILE_SIZE + TILE_SIZE / 2;
+        p.y = room.bed.y * TILE_SIZE + TILE_SIZE / 2;
+        room.owner = socketId;
+        return true;
+    }
+
+    playerBuild(socketId, tileX, tileY, buildType) {
+        const p = this.players[socketId];
+        if (!p || p.state !== 'SLEEPING' || p.room === null) return { ok: false };
+        const room = this.rooms[p.room];
+        if (!room) return { ok: false };
+        if (tileX < room.x || tileX >= room.x + room.w ||
+            tileY < room.y || tileY >= room.y + room.h) return { ok: false };
+
+        const COSTS = {
+            turret: 30, generator: 50,
+            copper_mine: 40, silver_mine: 120, gold_mine: 300,
+            grenade_launcher: 200, ghost_net: 350,
+            door_shield: 250, repair_tool: 150,
+        };
+        const cost = COSTS[buildType];
+        if (!cost || p.coins < cost) return { ok: false, reason: 'Not enough coins' };
+
+        const occupied = [...room.turrets, ...room.generators, ...room.mines]
+            .some(t => t.x === tileX && t.y === tileY);
+        if (occupied || (tileX === room.bed.x && tileY === room.bed.y))
+            return { ok: false, reason: 'Tile occupied' };
+
+        p.coins -= cost;
+
+        if (buildType === 'turret') room.turrets.push({ x: tileX, y: tileY, level: 1, lastFire: 0, angle: 0 });
+        else if (buildType === 'generator') room.generators.push({ x: tileX, y: tileY, level: 1 });
+        else if (['copper_mine', 'silver_mine', 'gold_mine'].includes(buildType))
+            room.mines.push({ x: tileX, y: tileY, type: buildType.replace('_mine', ''), level: 1 });
+        else if (buildType === 'grenade_launcher') room._hasGrenadeLauncher = true;
+        else if (buildType === 'ghost_net') room._hasGhostNet = true;
+        else if (buildType === 'door_shield') room._hasShield = true;
+        else if (buildType === 'repair_tool') room._hasRepairTool = true;
+
+        return { ok: true };
+    }
+
+    // ─── UPGRADE ─────────────────────────────────────────────────
+    //  FIX: now returns the updated object so the client can refresh
+    //  selectedTile.obj with the real post-upgrade values instead of
+    //  a stale reference that showed the wrong level / next cost.
+    playerUpgrade(socketId, type, tileX, tileY) {
+        const p = this.players[socketId];
+        if (!p || p.state !== 'SLEEPING' || p.room === null) return { ok: false };
+        const room = this.rooms[p.room];
+        if (!room) return { ok: false };
+
+        const BC = [10, 25, 60, 150, 300, 600, 1500, 3000, 6000, 12000, 25000, 50000];
+        const DC = [20, 50, 120, 250, 500, 1000, 2500, 5000, 10000, 20000, 40000, 80000];
+        const TC = [30, 80, 200, 450, 1000, 2500, 6000, 12000, 25000, 50000, 100000, 250000];
+        const GC = [50, 120, 300, 700, 1500, 3000, 7000, 15000, 30000, 60000, 120000, 300000];
+        const MC = {
+            copper: [40, 100, 250, 600, 1200, 2500],
+            silver: [120, 300, 750, 1800, 3500, 7000],
+            gold: [300, 750, 1800, 4000, 8000, 16000],
+        };
+
+        let cost = 0, obj = null;
+        if (type === 'bed') { obj = room.bed; cost = BC[obj.level]; }
+        else if (type === 'door') { obj = room.door; cost = DC[obj.level]; }
+        else if (type === 'turret') {
+            obj = room.turrets.find(t => t.x === tileX && t.y === tileY);
+            if (obj) cost = TC[obj.level];
+        }
+        else if (type === 'generator') {
+            obj = room.generators.find(t => t.x === tileX && t.y === tileY);
+            if (obj) cost = GC[obj.level];
+        }
+        else if (type === 'mine') {
+            obj = room.mines.find(t => t.x === tileX && t.y === tileY);
+            if (obj) cost = (MC[obj.type] || [])[obj.level] || 0;
+        }
+
+        if (!obj || p.coins < cost || cost === 0) return { ok: false };
+
+        p.coins -= cost;
+        obj.level += 1;
+
+        // Door: bump hp cap to new tier and fully restore hp
+        if (type === 'door') {
+            obj.maxHp = DOOR_HPS[obj.level];
+            obj.hp = obj.maxHp;
+        }
+
+        // Return the fresh object so the client can update its reference
+        return { ok: true, updatedObj: JSON.parse(JSON.stringify(obj)) };
+    }
+
+    playerRepair(socketId) {
+        const p = this.players[socketId];
+        if (!p || p.state !== 'SLEEPING' || p.room === null) return false;
+        if (p.repairCooldown > 0 || p.repairActive) return false;
+        p.repairActive = true;
+        p.repairActiveTimer = 5;
+        return true;
+    }
+
+    playerUseGrenade(socketId) {
+        const p = this.players[socketId];
+        if (!p || p.state !== 'SLEEPING' || p.room === null) return false;
+        const room = this.rooms[p.room];
+        if (!room._hasGrenadeLauncher || !this.ghost || this.ghost.state === 'DEAD') return false;
+        room._hasGrenadeLauncher = false;
+        const dmg = Math.floor(this.ghost.maxHp * 0.4 + 400);
+        this.ghost.hp -= dmg;
+        if (this.ghost.hp <= 0) {
+            this.ghost.hp = 0;
+            this.ghost.state = 'DEAD';
+            this.gameOver = true;
+            this.winner = 'survivors';
+        }
+        return { ok: true, dmg };
+    }
+
+    playerUseGhostNet(socketId) {
+        const p = this.players[socketId];
+        if (!p || p.state !== 'SLEEPING' || p.room === null) return false;
+        const room = this.rooms[p.room];
+        if (!room._hasGhostNet || !this.ghost) return false;
+        room._hasGhostNet = false;
+        this.ghost.ghostStunTimer = 3;
+        return true;
+    }
+
+    playerMove(socketId, x, y, vx, vy, facing) {
+        const p = this.players[socketId];
+        if (!p || p.isGhost || p.state !== 'ROAMING') return;
+        const v = validateClientPos(this.map, this.rooms, p.x, p.y, x, y, ENTITY_RADIUS);
+        p.x = v.x; p.y = v.y; p.vx = vx; p.vy = vy; p.facing = facing;
+    }
+
+    ghostMove(socketId, vx, vy, facing) {
+        const p = this.players[socketId];
+        if (!p || !p.isGhost || p.state === 'DEAD') return;
+        if (this.ghostTimer > 0) return;
+        this.ghostIsBot = false;
+        const mag = Math.sqrt(vx * vx + vy * vy);
+        if (mag > 1) { vx /= mag; vy /= mag; }
+        p.vx = vx; p.vy = vy;
+        if (vx !== 0 || vy !== 0) p.facing = facing;
+    }
+
+    ghostDisconnected() {
+        this.ghostIsBot = true;
+        if (this.ghost) this.ghost.ghostState = 'HUNTING';
+    }
+
+    getState() {
+        return {
+            players: this.players,
+            rooms: this.rooms,
+            map: null,
+            ghostTimer: this.ghostTimer,
+            gameOver: this.gameOver,
+            winner: this.winner,
+        };
+    }
+
+    getInitialState() {
+        return {
+            players: this.players,
+            rooms: this.rooms,
+            map: this.map,
+            ghostTimer: this.ghostTimer,
+        };
+    }
+
+    getDuration() {
+        return Math.floor((Date.now() - this.startTime) / 1000);
+    }
+}
+
+module.exports = { ServerGame };
+
+
+
+
+
+
+
+
+
+
+index.js
+require('dotenv').config();
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const path = require('path');
+const { v4: uuidv4 } = require('uuid');
+const { Room, Player } = require('./models');
+const { ServerGame } = require('./gameState');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: { origin: '*', methods: ['GET', 'POST'] },
+    pingTimeout: 20000,
+    pingInterval: 10000,
+});
+
+const PORT = process.env.PORT || 3001;
+const MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/ghost-killer';
+
+// ── MIDDLEWARE ────────────────────────────────────────────────────
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, '../client/public')));
+
+// ── IN-MEMORY ─────────────────────────────────────────────────────
+// roomId → { room metadata, game instance, tickInterval }
+const activeRooms = new Map();
+// socketId → { name, roomId }
+const connectedPlayers = new Map();
+
+// ── MONGODB ───────────────────────────────────────────────────────
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('✅ MongoDB connected'))
+    .catch(err => console.warn('⚠️  MongoDB not available, running without persistence:', err.message));
+
+// ── REST API ──────────────────────────────────────────────────────
+
+// Health check
+app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
+
+// Get room info (for joining)
+app.get('/api/room/:roomId', async (req, res) => {
+    const { roomId } = req.params;
+    const room = activeRooms.get(roomId);
+    if (!room) return res.status(404).json({ error: 'Room not found or already started' });
+    res.json({
+        roomId,
+        hostName: room.meta.hostName,
+        playerCount: room.meta.players.length,
+        maxPlayers: 7,
+        status: room.meta.status,
+    });
+});
+
+// Leaderboard — top survivors
+app.get('/api/leaderboard', async (req, res) => {
+    try {
+        const rooms = await Room.find({ status: 'FINISHED' })
+            .sort({ createdAt: -1 })
+            .limit(20)
+            .lean();
+        res.json(rooms);
+    } catch (e) {
+        res.json([]);
+    }
+});
+
+// ── SOCKET.IO ─────────────────────────────────────────────────────
+io.on('connection', (socket) => {
+    console.log(`🔌 Connected: ${socket.id}`);
+
+    // ── JOIN / CREATE ────────────────────────────────────────────
+    socket.on('create_room', ({ name }, callback) => {
+        if (!name || name.trim().length < 1) return callback({ error: 'Name required' });
+        const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const playerData = { id: socket.id, name: name.trim(), isHost: true };
+
+        const roomMeta = {
+            roomId,
+            hostId: socket.id,
+            hostName: name.trim(),
+            status: 'LOBBY',
+            players: [playerData],
+        };
+        activeRooms.set(roomId, { meta: roomMeta, game: null, tickInterval: null });
+        connectedPlayers.set(socket.id, { name: name.trim(), roomId });
+        socket.join(roomId);
+
+        // Persist to mongo (non-blocking)
+        new Room({ roomId, hostId: socket.id, hostName: name.trim(), players: [socket.id], playerNames: { [socket.id]: name.trim() } })
+            .save().catch(() => { });
+
+        console.log(`🏠 Room created: ${roomId} by ${name}`);
+        callback({ ok: true, roomId, isHost: true, name: name.trim() });
+        io.to(roomId).emit('lobby_update', buildLobbyState(roomId));
+    });
+
+    socket.on('join_room', ({ name, roomId }, callback) => {
+        if (!name || name.trim().length < 1) return callback({ error: 'Name required' });
+        const id = roomId?.toUpperCase();
+        const roomData = activeRooms.get(id);
+        if (!roomData) return callback({ error: 'Room not found. Check the Room ID.' });
+        if (roomData.meta.status !== 'LOBBY') return callback({ error: 'Game already started!' });
+        if (roomData.meta.players.length >= 7) return callback({ error: 'Room is full (max 7 players).' });
+
+        const playerData = { id: socket.id, name: name.trim(), isHost: false };
+        roomData.meta.players.push(playerData);
+        connectedPlayers.set(socket.id, { name: name.trim(), roomId: id });
+        socket.join(id);
+
+        // Update mongo (non-blocking)
+        Room.findOneAndUpdate({ roomId: id }, { $push: { players: socket.id }, $set: { [`playerNames.${socket.id}`]: name.trim() } }).catch(() => { });
+
+        console.log(`👤 ${name} joined room ${id}`);
+        callback({ ok: true, roomId: id, isHost: false, name: name.trim() });
+        io.to(id).emit('lobby_update', buildLobbyState(id));
+    });
+
+    // ── START GAME ───────────────────────────────────────────────
+    socket.on('start_game', (callback) => {
+        const playerInfo = connectedPlayers.get(socket.id);
+        if (!playerInfo) return callback?.({ error: 'Not in a room' });
+        const { roomId } = playerInfo;
+        const roomData = activeRooms.get(roomId);
+        if (!roomData) return callback?.({ error: 'Room not found' });
+        if (roomData.meta.hostId !== socket.id) return callback?.({ error: 'Only host can start' });
+        if (roomData.meta.players.length < 3) return callback?.({ error: 'Need at least 3 players' });
+        if (roomData.meta.status !== 'LOBBY') return callback?.({ error: 'Already started' });
+
+        roomData.meta.status = 'PLAYING';
+        const playerList = roomData.meta.players;
+        const game = new ServerGame(roomId, playerList);
+        roomData.game = game;
+
+        // Tell everyone game is starting with initial state
+        io.to(roomId).emit('game_start', game.getInitialState());
+        Room.findOneAndUpdate({ roomId }, { status: 'PLAYING' }).catch(() => { });
+
+        // Server tick at 20 FPS
+        let lastTick = Date.now();
+        roomData.tickInterval = setInterval(() => {
+            const now = Date.now();
+            const dt = Math.min((now - lastTick) / 1000, 0.1);
+            lastTick = now;
+            const state = game.tick(dt);
+            if (state) io.to(roomId).emit('game_tick', state);
+            if (game.gameOver) {
+                clearInterval(roomData.tickInterval);
+                io.to(roomId).emit('game_over', { winner: game.winner });
+                _saveFinishedGame(roomId, game);
+                activeRooms.delete(roomId);
+            }
+        }, 50); // 20 FPS server tick
+
+        console.log(`🎮 Game started in room ${roomId} with ${playerList.length} players`);
+        callback?.({ ok: true });
+    });
+
+    // ── IN-GAME EVENTS ───────────────────────────────────────────
+    socket.on('player_move', ({ x, y, vx, vy, facing }) => {
+        const pi = connectedPlayers.get(socket.id);
+        if (!pi) return;
+        const rd = activeRooms.get(pi.roomId);
+        if (!rd?.game) return;
+        rd.game.playerMove(socket.id, x, y, vx, vy, facing);
+    });
+
+    socket.on('ghost_move', ({ vx, vy, facing }) => {
+        const pi = connectedPlayers.get(socket.id);
+        if (!pi) return;
+        const rd = activeRooms.get(pi.roomId);
+        if (!rd?.game) return;
+        rd.game.ghostMove(socket.id, vx, vy, facing);
+    });
+
+    socket.on('player_sleep', ({ roomIdx }, callback) => {
+        const pi = connectedPlayers.get(socket.id);
+        if (!pi) return callback?.({ ok: false });
+        const rd = activeRooms.get(pi.roomId);
+        if (!rd?.game) return callback?.({ ok: false });
+        const ok = rd.game.playerSleep(socket.id, roomIdx);
+        callback?.({ ok });
+        if (ok) io.to(pi.roomId).emit('player_slept', { socketId: socket.id, roomIdx });
+    });
+
+    socket.on('player_build', ({ tileX, tileY, buildType }, callback) => {
+        const pi = connectedPlayers.get(socket.id);
+        if (!pi) return callback?.({ ok: false });
+        const rd = activeRooms.get(pi.roomId);
+        if (!rd?.game) return callback?.({ ok: false });
+        const result = rd.game.playerBuild(socket.id, tileX, tileY, buildType);
+        callback?.(result);
+    });
+
+    socket.on('player_upgrade', ({ type, tileX, tileY }, callback) => {
+        const pi = connectedPlayers.get(socket.id);
+        if (!pi) return callback?.({ ok: false });
+        const rd = activeRooms.get(pi.roomId);
+        if (!rd?.game) return callback?.({ ok: false });
+        const result = rd.game.playerUpgrade(socket.id, type, tileX, tileY);
+        callback?.(result);
+    });
+
+    socket.on('player_repair', (callback) => {
+        const pi = connectedPlayers.get(socket.id);
+        if (!pi) return callback?.({ ok: false });
+        const rd = activeRooms.get(pi.roomId);
+        if (!rd?.game) return;
+        const ok = rd.game.playerRepair(socket.id);
+        callback?.({ ok });
+    });
+
+    socket.on('player_use_grenade', (callback) => {
+        const pi = connectedPlayers.get(socket.id);
+        if (!pi) return;
+        const rd = activeRooms.get(pi.roomId);
+        if (!rd?.game) return;
+        const result = rd.game.playerUseGrenade(socket.id);
+        if (result) io.to(pi.roomId).emit('grenade_exploded', { by: socket.id, dmg: result.dmg });
+        callback?.(result);
+    });
+
+    socket.on('player_use_net', (callback) => {
+        const pi = connectedPlayers.get(socket.id);
+        if (!pi) return;
+        const rd = activeRooms.get(pi.roomId);
+        if (!rd?.game) return;
+        const ok = rd.game.playerUseGhostNet(socket.id);
+        if (ok) io.to(pi.roomId).emit('ghost_netted', { by: socket.id });
+        callback?.({ ok });
+    });
+
+    // ── CHAT ─────────────────────────────────────────────────────
+    socket.on('chat_message', ({ text }) => {
+        const pi = connectedPlayers.get(socket.id);
+        if (!pi || !text) return;
+        const rd = activeRooms.get(pi.roomId);
+        if (!rd) return;
+        const name = pi.name;
+        io.to(pi.roomId).emit('chat_message', { name, text: text.slice(0, 80), time: Date.now() });
+    });
+
+    // ── DISCONNECT ───────────────────────────────────────────────
+    socket.on('disconnect', () => {
+        console.log(`❌ Disconnected: ${socket.id}`);
+        const pi = connectedPlayers.get(socket.id);
+        if (!pi) return;
+        connectedPlayers.delete(socket.id);
+        const { roomId } = pi;
+        const rd = activeRooms.get(roomId);
+        if (!rd) return;
+
+        if (rd.meta.status === 'LOBBY') {
+            rd.meta.players = rd.meta.players.filter(p => p.id !== socket.id);
+            // If host left, assign new host or close room
+            if (rd.meta.hostId === socket.id) {
+                if (rd.meta.players.length > 0) {
+                    rd.meta.hostId = rd.meta.players[0].id;
+                    rd.meta.players[0].isHost = true;
+                    io.to(rd.meta.players[0].id).emit('you_are_host');
+                } else {
+                    activeRooms.delete(roomId);
+                    return;
+                }
+            }
+            io.to(roomId).emit('lobby_update', buildLobbyState(roomId));
+        } else if (rd.meta.status === 'PLAYING' && rd.game) {
+            // Mark player as dead
+            const gp = rd.game.players[socket.id];
+            if (gp) {
+                gp.state = 'DEAD';
+                // If the ghost disconnected, hand AI control over the ghost
+                if (gp.isGhost) rd.game.ghostDisconnected();
+            }
+            io.to(roomId).emit('player_disconnected', { id: socket.id, name: pi.name });
+        }
+    });
+});
+
+// ── HELPERS ───────────────────────────────────────────────────────
+function buildLobbyState(roomId) {
+    const rd = activeRooms.get(roomId);
+    if (!rd) return null;
+    return {
+        roomId,
+        hostId: rd.meta.hostId,
+        players: rd.meta.players.map(p => ({ id: p.id, name: p.name, isHost: p.isHost })),
+        status: rd.meta.status,
+    };
+}
+
+async function _saveFinishedGame(roomId, game) {
+    try {
+        const survivors = Object.values(game.players).filter(p => !p.isGhost && p.state !== 'DEAD').length;
+        await Room.findOneAndUpdate({ roomId }, {
+            status: 'FINISHED',
+            winner: game.winner,
+            stats: {
+                duration: game.getDuration(),
+                ghostKilled: game.winner === 'survivors',
+                survivorsAlive: survivors,
+                ghostLevel: game.ghost?.ghostLevel || 1,
+            }
+        });
+    } catch (e) { /* non-critical */ }
+}
+
+// ── START ─────────────────────────────────────────────────────────
+server.listen(PORT, () => {
+    console.log(`\n🚀 Ghost Killer Server running on http://localhost:${PORT}`);
+    console.log(`📡 Socket.IO ready`);
+    console.log(`🌍 Serving client from /client/public\n`);
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <!DOCTYPE html>
 <html lang="en">
 
@@ -811,104 +2031,29 @@
         /* Joystick */
         #joystick-zone {
             position: absolute;
-            bottom: 20px;
-            left: 20px;
-            width: 130px;
-            height: 130px;
-            background: rgba(255, 255, 255, 0.05);
-            border: 2px solid rgba(255, 255, 255, 0.2);
+            bottom: 30px;
+            left: 30px;
+            width: 120px;
+            height: 120px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 2px solid rgba(255, 255, 255, 0.15);
             border-radius: 50%;
             display: none;
             pointer-events: auto;
             z-index: 10;
-            touch-action: none;
         }
 
         #joystick-knob {
             position: absolute;
             top: 50%;
             left: 50%;
-            width: 48px;
-            height: 48px;
-            background: rgba(255, 255, 255, 0.35);
+            width: 44px;
+            height: 44px;
+            background: rgba(255, 255, 255, 0.3);
             border-radius: 50%;
             transform: translate(-50%, -50%);
             pointer-events: none;
-            border: 2px solid rgba(255, 255, 255, 0.5);
-        }
-
-        /* Mobile build button — tap to open build panel when sleeping */
-        #mobile-build-btn {
-            display: none;
-            position: absolute;
-            bottom: 20px;
-            right: 20px;
-            width: 64px;
-            height: 64px;
-            background: linear-gradient(135deg, rgba(59, 130, 246, 0.9), rgba(99, 102, 241, 0.9));
-            border: 2px solid rgba(99, 102, 241, 0.8);
-            border-radius: 50%;
-            font-size: 28px;
-            line-height: 64px;
-            text-align: center;
-            cursor: pointer;
-            pointer-events: auto;
-            z-index: 10;
-            box-shadow: 0 0 20px rgba(59, 130, 246, 0.4);
-        }
-
-        /* Mobile action panel — full width on small screens */
-        @media (max-width:600px) {
-            #action-panel {
-                right: 0;
-                left: 0;
-                width: 100%;
-                top: auto;
-                bottom: 0;
-                transform: none;
-                border-radius: 16px 16px 0 0;
-                max-height: 70vh;
-            }
-
-            #ap-content {
-                max-height: 55vh;
-            }
-
-            #top-bar {
-                flex-wrap: wrap;
-                padding: 6px;
-            }
-
-            #top-bar .stat-card {
-                padding: 5px 8px;
-            }
-
-            #top-bar .hvalue {
-                font-size: 14px;
-            }
-
-            #player-list-ui {
-                top: auto;
-                bottom: 160px;
-            }
-
-            #game-chat {
-                display: none;
-            }
-
-            #minimap {
-                width: 100px;
-                height: 100px;
-            }
-
-            #minimap-canvas {
-                width: 100px;
-                height: 100px;
-            }
-
-            .ghost-lv-num {
-                font-size: 16px;
-            }
+            border: 2px solid rgba(255, 255, 255, 0.4);
         }
 
         /* End screen */
@@ -1057,9 +2202,9 @@
             transform: translateX(-50%);
             pointer-events: auto;
             z-index: 30;
+            display: none;
             gap: 10px;
             align-items: center;
-            flex-direction: column;
         }
 
         .ghost-ability {
@@ -1092,52 +2237,6 @@
             font-size: 8px;
             letter-spacing: 1px;
             color: rgba(239, 68, 68, 0.8);
-            margin-top: 3px;
-        }
-
-        /* Survivor consumable HUD (grenade + net) */
-        #survivor-hud {
-            display: none;
-            position: absolute;
-            bottom: 80px;
-            left: 50%;
-            transform: translateX(-50%);
-            pointer-events: auto;
-            z-index: 30;
-            gap: 10px;
-            align-items: center;
-            flex-direction: row;
-        }
-
-        .survivor-ability {
-            background: rgba(5, 10, 20, 0.92);
-            border: 1px solid rgba(56, 189, 248, 0.4);
-            border-radius: 10px;
-            padding: 10px 16px;
-            text-align: center;
-            cursor: pointer;
-            transition: all .2s;
-            min-width: 80px;
-        }
-
-        .survivor-ability:hover {
-            background: rgba(56, 189, 248, 0.15);
-            border-color: rgba(56, 189, 248, 0.8);
-        }
-
-        .survivor-ability.hidden {
-            display: none !important;
-        }
-
-        .survivor-ability .sa-icon {
-            font-size: 22px;
-        }
-
-        .survivor-ability .sa-name {
-            font-family: 'Orbitron', monospace;
-            font-size: 8px;
-            letter-spacing: 1px;
-            color: rgba(56, 189, 248, 0.8);
             margin-top: 3px;
         }
 
@@ -1378,24 +2477,9 @@
         </div>
 
         <div id="ghost-hud">
-            <div
-                style="font-family:'Orbitron',monospace;font-size:10px;letter-spacing:2px;color:rgba(239,68,68,0.7);margin-bottom:4px;text-align:center;">
-                GHOST ABILITIES</div>
-            <div class="ghost-ability" id="ga-frozen" style="opacity:0.5;cursor:default;">
-                <div class="ga-icon">❄️</div>
-                <div class="ga-name">FROZEN</div>
-            </div>
-        </div>
-
-        <!-- Survivor consumable HUD (grenade + net buttons) -->
-        <div id="survivor-hud">
-            <div id="sh-grenade" class="survivor-ability hidden" onclick="survivorUseGrenade()">
-                <div class="sa-icon">💣</div>
-                <div class="sa-name">GRENADE</div>
-            </div>
-            <div id="sh-net" class="survivor-ability hidden" onclick="survivorUseNet()">
-                <div class="sa-icon">🕸️</div>
-                <div class="sa-name">USE NET</div>
+            <div class="ghost-ability" id="ga-net" onclick="ghostUseNet()">
+                <div class="ga-icon">🕸️</div>
+                <div class="ga-name">NEARBY<br>NET</div>
             </div>
         </div>
 
@@ -1415,7 +2499,6 @@
     </div>
 
     <button id="sleep-btn">💤 SLEEP</button>
-    <div id="mobile-build-btn">🔨</div>
     <div id="repair-btn-wrap">
         <button id="repair-btn" class="active">🔧 REPAIR GATE</button>
         <div id="repair-timer">READY</div>
@@ -1461,16 +2544,21 @@
         window.addEventListener('resize', () => { W = window.innerWidth; H = window.innerHeight; canvas.width = W; canvas.height = H; });
 
         // ── SOCKET ───────────────────────────────────────────────────────
-        const socket = io();
+        // const socket = io();
+        // above one is for local host
+        // Replace the URL with your actual Render Backend URL (ends in .onrender.com)
+        const socket = io("https://ghost-game-g417.onrender.com", {
+            transports: ["websocket"] // High performance for games
+        });
 
         // ── LOCAL STATE ──────────────────────────────────────────────────
         let myId = null, myName = '', myRoomId = '', isHost = false;
         let gameState = null;  // server state snapshot
-        let map = null, rooms = null, healSpots = [];
+        let map = null, rooms = null;
         let myRole = null; // 'survivor' | 'ghost'
         let camX = 0, camY = 0;
         let selectedTile = null;
-        let particles = [], floatingTexts = [], grenadeEffects = [], turretShots = [];
+        let particles = [], floatingTexts = [], grenadeEffects = [];
         let hasSlepped = false;
         let repairCooldown = 0, repairActive = false, repairActiveTimer = 0;
 
@@ -1480,32 +2568,12 @@
 
         let joyActive = false, joyDelta = { x: 0, y: 0 }, joyOrigin = { x: 0, y: 0 };
         const joyZone = document.getElementById('joystick-zone'), joyKnob = document.getElementById('joystick-knob');
-        const JOY_RADIUS = 50; // half the zone size (130/2 = 65 outer, 50 knob travel)
-        const isTouchDev = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-        if (isTouchDev) joyZone.style.display = 'block';
-        joyZone.addEventListener('touchstart', e => {
-            e.preventDefault(); joyActive = true;
-            const t = e.changedTouches[0], r = joyZone.getBoundingClientRect();
-            joyOrigin.x = r.left + r.width / 2; joyOrigin.y = r.top + r.height / 2;
-            _updateJoy(t.clientX, t.clientY);
-        }, { passive: false });
-        joyZone.addEventListener('touchmove', e => {
-            e.preventDefault();
-            if (joyActive) _updateJoy(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
-        }, { passive: false });
-        const _resetJoy = e => {
-            e.preventDefault();
-            joyActive = false; joyDelta = { x: 0, y: 0 };
-            joyKnob.style.transform = 'translate(-50%,-50%)';
-        };
-        joyZone.addEventListener('touchend', _resetJoy, { passive: false });
-        joyZone.addEventListener('touchcancel', _resetJoy, { passive: false });
-        function _updateJoy(cx, cy) {
-            let dx = cx - joyOrigin.x, dy = cy - joyOrigin.y, d = Math.sqrt(dx * dx + dy * dy);
-            if (d > JOY_RADIUS) { dx = dx / d * JOY_RADIUS; dy = dy / d * JOY_RADIUS; }
-            joyKnob.style.transform = `translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px))`;
-            joyDelta.x = dx / JOY_RADIUS; joyDelta.y = dy / JOY_RADIUS;
-        }
+        if ('ontouchstart' in window || navigator.maxTouchPoints > 0) joyZone.style.display = 'block';
+        joyZone.addEventListener('touchstart', e => { e.preventDefault(); joyActive = true; let t = e.changedTouches[0]; let r = joyZone.getBoundingClientRect(); joyOrigin.x = r.left + r.width / 2; joyOrigin.y = r.top + r.height / 2; _updateJoy(t.clientX, t.clientY); });
+        joyZone.addEventListener('touchmove', e => { e.preventDefault(); if (joyActive) _updateJoy(e.changedTouches[0].clientX, e.changedTouches[0].clientY); });
+        const _ej = e => { e.preventDefault(); joyActive = false; joyDelta = { x: 0, y: 0 }; joyKnob.style.transform = 'translate(-50%,-50%)'; };
+        joyZone.addEventListener('touchend', _ej); joyZone.addEventListener('touchcancel', _ej);
+        function _updateJoy(cx, cy) { let dx = cx - joyOrigin.x, dy = cy - joyOrigin.y, d = Math.sqrt(dx * dx + dy * dy); if (d > 35) { dx = dx / d * 35; dy = dy / d * 35; } joyKnob.style.transform = `translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px))`; joyDelta.x = dx / 35; joyDelta.y = dy / 35; }
 
         const dist = (x1, y1, x2, y2) => Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
         function addFT(x, y, text, color) { floatingTexts.push({ x, y, text, color, life: 1.5, maxLife: 1.5 }); }
@@ -1514,22 +2582,19 @@
         // ── CLIENT-SIDE COLLISION ────────────────────────────────────────
         // Mirrors the server logic so movement feels responsive.
         // Server is authoritative and will correct any discrepancy.
-        function clientTileBlocks(tx, ty, isGhostMover) {
+        function clientTileBlocks(tx, ty) {
             if (!map || tx < 0 || tx >= MAP_W || ty < 0 || ty >= MAP_H) return true;
             if (map[ty][tx] === 1) return true;
             if (map[ty][tx] === 2) {
                 const room = rooms && rooms.find(r => r.door.x === tx && r.door.y === ty);
-                if (!room) return false;
-                if (room.door.hp <= 0) return false;  // broken door — always passable
-                if (!room.owner) return false;       // empty room — freely enterable by anyone
-                if (isGhostMover) return true;       // ghost blocked by owned intact doors
-                return !!room.owner;                // survivor blocked by their own owned intact doors
+                if (!room || !room.owner) return false;
+                return room.door.hp > 0;          // gate is solid while hp > 0
             }
             return false;
         }
 
         // 8-point perimeter check, radius slightly inset so entity doesn't stick
-        function clientWallHit(nx, ny, radius, isGhostMover) {
+        function clientWallHit(nx, ny, radius) {
             const r = radius - 2;
             const pts = [
                 { x: nx - r, y: ny - r }, { x: nx, y: ny - r }, { x: nx + r, y: ny - r },
@@ -1537,20 +2602,20 @@
                 { x: nx - r, y: ny + r }, { x: nx, y: ny + r }, { x: nx + r, y: ny + r },
             ];
             for (const p of pts) {
-                if (clientTileBlocks(Math.floor(p.x / TILE_SIZE), Math.floor(p.y / TILE_SIZE), isGhostMover)) return true;
+                if (clientTileBlocks(Math.floor(p.x / TILE_SIZE), Math.floor(p.y / TILE_SIZE))) return true;
             }
             return false;
         }
 
         // Wall-sliding movement — returns new {x,y}, never teleports through walls
-        function clientMoveCollide(x, y, vx, vy, speed, dt, radius, isGhostMover) {
+        function clientMoveCollide(x, y, vx, vy, speed, dt, radius) {
             const steps = 4;
             let nx = x, ny = y;
             const dx = (vx * speed * dt) / steps;
             const dy = (vy * speed * dt) / steps;
             for (let i = 0; i < steps; i++) {
-                if (!clientWallHit(nx + dx, ny, radius, isGhostMover)) nx += dx;
-                if (!clientWallHit(nx, ny + dy, radius, isGhostMover)) ny += dy;
+                if (!clientWallHit(nx + dx, ny, radius)) nx += dx;
+                if (!clientWallHit(nx, ny + dy, radius)) ny += dy;
             }
             return { x: nx, y: ny };
         }
@@ -1669,7 +2734,6 @@
 
             map = initState.map;
             rooms = initState.rooms;
-            healSpots = initState.healSpots || [];
             gameState = initState;
             gameState.ghostTimer = initState.ghostTimer;
             gameState._startMs = Date.now();
@@ -1723,37 +2787,7 @@
                     }
                 }
             }
-            if (state.rooms) {
-                // Detect turret shots: when lastFire resets near 0, a shot was just fired
-                if (rooms && state.rooms) {
-                    const ghost = state.players && Object.values(state.players).find(p => p.isGhost);
-                    if (ghost && ghost.state !== 'DEAD') {
-                        for (let ri = 0; ri < state.rooms.length; ri++) {
-                            const newR = state.rooms[ri], oldR = rooms[ri];
-                            if (!newR || !oldR) continue;
-                            for (let ti = 0; ti < newR.turrets.length; ti++) {
-                                const nt = newR.turrets[ti], ot = oldR.turrets[ti];
-                                if (ot && nt.lastFire < ot.lastFire - 0.5) {
-                                    // Shot fired this tick
-                                    const tx = nt.x * TILE_SIZE + TILE_SIZE / 2, ty = nt.y * TILE_SIZE + TILE_SIZE / 2;
-                                    turretShots.push({
-                                        sx: tx, sy: ty, ex: ghost.x, ey: ghost.y,
-                                        life: 0.18, maxLife: 0.18,
-                                        angle: nt.angle || 0
-                                    });
-                                    // Muzzle flash particles
-                                    const barLen = 12 + nt.level * 1.5;
-                                    const mx = tx + Math.cos(nt.angle || 0) * (barLen + 6);
-                                    const my = ty + Math.sin(nt.angle || 0) * (barLen + 6);
-                                    addParts(mx, my, '#fbbf24', 5);
-                                    addParts(mx, my, '#fff', 3);
-                                }
-                            }
-                        }
-                    }
-                }
-                rooms = state.rooms; gameState.rooms = rooms;
-            }
+            if (state.rooms) { rooms = state.rooms; gameState.rooms = rooms; }
             if (state.ghostTimer !== undefined) gameState.ghostTimer = state.ghostTimer;
             // gameOver is checked via game_over socket event, not here
 
@@ -1800,58 +2834,20 @@
 
             updatePlayerListUI();
 
-            // Live-refresh action panel if open — update only the mutable stat lines and
-            // the cost/button, never rebuild the whole panel (that would kill mid-click events)
-            if (selectedTile && document.getElementById('action-panel').style.display !== 'none') {
-                const me3 = gameState.players[socket.id];
-                if (me3 && me3.state === 'SLEEPING' && me3.room !== null) {
-                    const r = rooms[me3.room];
-                    if (r) {
-                        // Re-point obj reference to latest server data
-                        if (selectedTile.type === 'bed') selectedTile.obj = r.bed;
-                        else if (selectedTile.type === 'door') selectedTile.obj = r.door;
-                        else if (selectedTile.type === 'turret') selectedTile.obj = r.turrets.find(t => t.x === selectedTile.x && t.y === selectedTile.y) || selectedTile.obj;
-                        else if (selectedTile.type === 'generator') selectedTile.obj = r.generators.find(t => t.x === selectedTile.x && t.y === selectedTile.y) || selectedTile.obj;
-                        else if (selectedTile.type === 'mine') selectedTile.obj = r.mines.find(t => t.x === selectedTile.x && t.y === selectedTile.y) || selectedTile.obj;
-
-                        // In-place update only — never tear down the panel
-                        _refreshPanelStats(selectedTile, me3);
-                    }
-                }
-            }
-
             // Dead player: show spectator overlay
             const me2 = gameState.players[socket.id];
             if (me2 && me2.state === 'DEAD' && !me2.isGhost) {
                 document.getElementById('spectator-bar').style.display = 'block';
                 document.getElementById('repair-btn-wrap').style.display = 'none';
                 document.getElementById('sleep-btn').style.display = 'none';
-                document.getElementById('survivor-hud').style.display = 'none';
             }
 
-            // Ghost HUD — show when ghost is active (after freeze ends)
-            if (myRole === 'ghost' && me2 && me2.state !== 'DEAD') {
-                document.getElementById('ghost-hud').style.display = 'flex';
-                const frozen = (gameState.ghostTimer || 0) > 0;
-                const frozenEl = document.getElementById('ga-frozen');
-                if (frozenEl) frozenEl.style.display = frozen ? 'flex' : 'none';
-            }
-
-            // Survivor HUD — show grenade / net buttons when sleeping and items are available
-            if (myRole !== 'ghost' && me2 && me2.state === 'SLEEPING' && me2.room !== null) {
-                const r = rooms[me2.room];
-                if (r) {
-                    document.getElementById('survivor-hud').style.display = 'flex';
-                    // Show/hide grenade button based on whether item is purchased and available
-                    const grenadeBtn = document.getElementById('sh-grenade');
-                    const netBtn = document.getElementById('sh-net');
-                    if ((r.grenades || []).length > 0) grenadeBtn.classList.remove('hidden');
-                    else grenadeBtn.classList.add('hidden');
-                    if (r._hasGhostNet) netBtn.classList.remove('hidden');
-                    else netBtn.classList.add('hidden');
-                }
-            } else if (myRole !== 'ghost') {
-                document.getElementById('survivor-hud').style.display = 'none';
+            // Ghost HUD — show net button if the ghost player has a net available
+            if (myRole === 'ghost') {
+                const ghostHud = document.getElementById('ghost-hud');
+                ghostHud.style.display = 'flex';
+                // Find my room's net status — ghost doesn't have a room so just track globally
+                // Ghost player uses net globally, server handles it
             }
         });
 
@@ -1976,7 +2972,7 @@
 
             // Client-side wall collision for both ghost and survivor
             if (map && rooms) {
-                const moved = clientMoveCollide(localX, localY, vx, vy, spd, dt, me.isGhost ? GHOST_RADIUS_C : PLAYER_RADIUS, me.isGhost);
+                const moved = clientMoveCollide(localX, localY, vx, vy, spd, dt, me.isGhost ? GHOST_RADIUS_C : PLAYER_RADIUS);
                 localX = moved.x; localY = moved.y;
             } else {
                 localX += vx * spd * dt; localY += vy * spd * dt;
@@ -1989,18 +2985,21 @@
             me.x = localX; me.y = localY; me.vx = vx; me.vy = vy; me.facing = localFacing;
             localVx = vx; localVy = vy;
 
-            // Check near bed (survivors only) — can enter unowned rooms freely now
+            // For survivors: snap if server corrected us (wall cheat prevention)
+            if (!me.isGhost) {
+                const serverDist = dist(localX, localY, me.x, me.y);
+                if (serverDist > TILE_SIZE * 3) { localX = me.x; localY = me.y; }
+            }
+            // Ghost: local prediction runs freely; game_tick snaps only on large drift
+
+            // Check near bed (survivors only)
             if (!me.isGhost && !hasSlepped && rooms) {
                 let nearIdx = -1;
                 for (let i = 0; i < rooms.length; i++) {
                     const r = rooms[i];
                     if (r.owner) continue;
-                    // Check proximity to bed OR door tile
                     const bpx = r.bed.x * TILE_SIZE + TILE_SIZE / 2, bpy = r.bed.y * TILE_SIZE + TILE_SIZE / 2;
-                    const dpx = r.door.x * TILE_SIZE + TILE_SIZE / 2, dpy = r.door.y * TILE_SIZE + TILE_SIZE / 2;
-                    if (dist(localX, localY, bpx, bpy) < TILE_SIZE * 2 || dist(localX, localY, dpx, dpy) < TILE_SIZE * 1.2) {
-                        nearIdx = i; break;
-                    }
+                    if (dist(localX, localY, bpx, bpy) < TILE_SIZE * 1.5) { nearIdx = i; break; }
                 }
                 const btn = document.getElementById('sleep-btn');
                 if (nearIdx >= 0) { btn.style.display = 'block'; btn.onclick = () => doSleep(nearIdx); }
@@ -2012,23 +3011,10 @@
             if (hasSlepped) return;
             hasSlepped = true;
             socket.emit('player_sleep', { roomIdx }, (res) => {
-                if (!res?.ok) { hasSlepped = false; return; }
+                if (!res?.ok) return;
                 document.getElementById('sleep-btn').style.display = 'none';
                 document.getElementById('cam-hint').style.display = 'block';
                 document.getElementById('repair-btn-wrap').style.display = 'block';
-                // On touch devices: show build button, hide joystick while sleeping
-                if (isTouchDev) {
-                    document.getElementById('joystick-zone').style.display = 'none';
-                    const mb = document.getElementById('mobile-build-btn');
-                    mb.style.display = 'block';
-                    mb.onclick = () => {
-                        const me2 = gameState?.players?.[socket.id];
-                        if (!me2 || me2.state !== 'SLEEPING' || me2.room === null) return;
-                        const r = rooms[me2.room]; if (!r) return;
-                        // Open panel on bed tile as default
-                        openActionPanel({ roomIdx: me2.room, x: r.bed.x, y: r.bed.y, type: 'bed', obj: r.bed });
-                    };
-                }
             });
         }
 
@@ -2101,8 +3087,8 @@
                         { type: 'gold_mine', icon: '✨', name: 'Gold Mine', stat: '+15 🪙/sec', cost: 300, oneUse: false, ok: me.coins >= 300 && !hasGoldMine },
                     ],
                     defence: [
-                        { type: 'grenade_launcher', icon: '💣', name: 'Grenade Bomb', stat: 'Big AoE blast · placed on tile', cost: 200, oneUse: true, ok: me.coins >= 200 },
-                        { type: 'door_shield', icon: '🛡️', name: 'Gate Shield', stat: '+30% HP at 30% gate · placed on tile', cost: 250, oneUse: true, ok: me.coins >= 250 },
+                        { type: 'grenade_launcher', icon: '💣', name: 'Grenade', stat: 'Big AoE blast', cost: 200, oneUse: true, ok: me.coins >= 200 && !r._hasGrenadeLauncher },
+                        { type: 'door_shield', icon: '🛡️', name: 'Gate Shield', stat: '+30% HP at 30% gate · 1×', cost: 250, oneUse: true, ok: me.coins >= 250 && !r._hasShield },
                         { type: 'ghost_net', icon: '🕸️', name: 'Ghost Net', stat: 'Stuns ghost 3s · 1× use', cost: 350, oneUse: true, ok: me.coins >= 350 && !r._hasGhostNet },
                     ],
                 };
@@ -2146,174 +3132,65 @@
                 const r = rooms[tileInfo.roomIdx];
                 let name = '', icon = '', stat1 = '', stat2 = '', cCost = 0;
 
-                if (tileInfo.type === 'bed') {
-                    // Bed starts at level 0. BED_INCOME[lvl] = current income per second.
-                    name = 'Bed'; icon = '🛏️';
-                    stat1 = `+${BED_INCOME[lvl] ?? 1} 🪙/s`;
-                    const bedMax = BED_COSTS.length; // 12
-                    if (lvl < bedMax) { stat2 = `→ +${BED_INCOME[lvl + 1]} 🪙/s`; cCost = BED_COSTS[lvl]; }
-                }
-                else if (tileInfo.type === 'door') {
-                    // Door starts at level 0. DOOR_HPS[lvl] = current tier max HP.
-                    name = 'Gate'; icon = '🚪';
-                    stat1 = `Max HP: ${DOOR_HPS[lvl].toLocaleString()}`;
-                    const doorMax = DOOR_COSTS.length; // 12
-                    if (lvl < doorMax) { stat2 = `→ Max HP: ${DOOR_HPS[lvl + 1].toLocaleString()}`; cCost = DOOR_COSTS[lvl]; }
-                }
-                else if (tileInfo.type === 'turret') {
-                    // Turret starts at level 1. TURRET_DMG[lvl-1] = current dmg.
-                    name = 'Turret'; icon = '🔫';
-                    stat1 = `Dmg: ${TURRET_DMG[lvl - 1]} · Rng: ${TURRET_RNG[lvl - 1]}`;
-                    const turMax = TURRET_COSTS.length; // 12
-                    if (lvl < turMax) { stat2 = `→ Dmg: ${TURRET_DMG[lvl]}`; cCost = TURRET_COSTS[lvl]; }
-                }
-                else if (tileInfo.type === 'generator') {
-                    // Generator starts at level 1. GEN_INCOME[lvl-1] = current income.
-                    name = 'Generator'; icon = '⚡';
-                    stat1 = `+${GEN_INCOME[lvl - 1]} ⚡/s`;
-                    const genMax = GEN_COSTS.length; // 12
-                    if (lvl < genMax) { stat2 = `→ +${GEN_INCOME[lvl]} ⚡/s`; cCost = GEN_COSTS[lvl]; }
-                }
+                if (tileInfo.type === 'bed') { name = 'Bed'; icon = '🛏️'; stat1 = `+${BED_INCOME[lvl - 1] || 1}/s`; if (lvl < 12) { stat2 = `→ +${BED_INCOME[lvl]}/s`; cCost = BED_COSTS[lvl]; } }
+                else if (tileInfo.type === 'door') { name = 'Gate'; icon = '🚪'; stat1 = `HP: ${DOOR_HPS[Math.max(0, lvl - 1)]}`; if (lvl < 12) { stat2 = `→ HP: ${DOOR_HPS[lvl]}`; cCost = DOOR_COSTS[lvl]; } }
+                else if (tileInfo.type === 'turret') { name = 'Turret'; icon = '🔫'; stat1 = `Dmg: ${TURRET_DMG[lvl - 1]}`; if (lvl < 12) { stat2 = `→ Dmg: ${TURRET_DMG[lvl]}`; cCost = TURRET_COSTS[lvl]; } }
+                else if (tileInfo.type === 'generator') { name = 'Generator'; icon = '⚡'; stat1 = `+${GEN_INCOME[lvl - 1]} ⚡/s`; if (lvl < 12) { stat2 = `→ +${GEN_INCOME[lvl]} ⚡/s`; cCost = GEN_COSTS[lvl]; } }
                 else if (tileInfo.type === 'mine') {
-                    // Mine starts at level 1. income[lvl-1] = current income.
-                    const cfg = {
-                        copper: { icon: '⛏️', name: 'Copper Mine', income: MINE_INCOME.copper },
-                        silver: { icon: '🪨', name: 'Silver Mine', income: MINE_INCOME.silver },
-                        gold: { icon: '✨', name: 'Gold Mine', income: MINE_INCOME.gold }
-                    }[obj.type];
-                    name = cfg.name; icon = cfg.icon;
-                    stat1 = `+${cfg.income[lvl - 1] ?? 0} 🪙/s`;
+                    const cfg = { copper: { icon: '⛏️', name: 'Copper Mine', income: MINE_INCOME.copper }, silver: { icon: '🪨', name: 'Silver Mine', income: MINE_INCOME.silver }, gold: { icon: '✨', name: 'Gold Mine', income: MINE_INCOME.gold } }[obj.type];
+                    name = cfg.name; icon = cfg.icon; stat1 = `+${cfg.income[lvl - 1] || 0}/s`;
                     const mineCosts = { copper: [40, 100, 250, 600, 1200, 2500], silver: [120, 300, 750, 1800, 3500, 7000], gold: [300, 750, 1800, 4000, 8000, 16000] };
-                    const mineMax = (mineCosts[obj.type] || []).length; // 6
-                    if (lvl < mineMax) { stat2 = `→ +${cfg.income[lvl]} 🪙/s`; cCost = (mineCosts[obj.type] || [])[lvl] || 0; }
+                    if (lvl < 6) { stat2 = `→ +${cfg.income[lvl]}/s`; cCost = (mineCosts[obj.type] || [])[lvl] || 0; }
                 }
 
-                else if (tileInfo.type === 'grenade') {
-                    title.textContent = '💣 Grenade Bomb';
-                    content.innerHTML = `
-                <div style="text-align:center;padding:20px 0;">
-                    <div style="font-size:52px;margin-bottom:10px;">💣</div>
-                    <div style="color:rgba(180,200,240,0.8);font-size:13px;margin-bottom:14px;">Big AoE blast · destroys ghost HP</div>
-                    <button onclick="survivorUseGrenade()" class="upgrade-btn" style="background:linear-gradient(135deg,#ea580c,#c2410c);">🔥 FIRE GRENADE</button>
-                </div>`;
-                    return;
-                }
-                else if (tileInfo.type === 'shield') {
-                    title.textContent = '🛡️ Gate Shield';
-                    content.innerHTML = `
-                <div style="text-align:center;padding:20px 0;">
-                    <div style="font-size:52px;margin-bottom:10px;">🛡️</div>
-                    <div style="color:rgba(180,200,240,0.8);font-size:13px;margin-bottom:6px;">Auto-activates when gate drops below 30%</div>
-                    <div style="color:#86efac;font-size:11px;margin-bottom:14px;">Restores +30% HP once</div>
-                    <div style="font-family:'Orbitron',monospace;font-size:10px;color:#60a5fa;letter-spacing:2px;">PASSIVE — AUTO TRIGGER</div>
-                </div>`;
-                    return;
-                }
-
-                // Display level: bed/door start at 0 so show "Lv.1" for level 0 (tier 1), etc.
-                const dispLvl = (tileInfo.type === 'bed' || tileInfo.type === 'door') ? lvl + 1 : lvl;
-                title.textContent = `${name} Lv.${dispLvl}`;
+                title.textContent = `${name} Lv.${lvl}`;
                 const me2 = gameState?.players?.[socket.id];
                 const canAfford = me2 && cCost > 0 && me2.coins >= cCost;
 
-                if (!cCost) {
+                if (lvl >= 12 || cCost === 0) {
                     content.innerHTML = `<div style="text-align:center;padding:28px 0;"><div style="font-size:52px;margin-bottom:10px;">${icon}</div><div style="font-family:'Orbitron',monospace;color:#22c55e;font-size:14px;font-weight:700;letter-spacing:2px;">MAX LEVEL</div></div>`;
                 } else {
                     content.innerHTML = `
             <div style="text-align:center;margin-bottom:14px;">
                 <div style="font-size:48px;margin-bottom:8px;">${icon}</div>
-                <div id="ap-stat1" style="color:rgba(180,200,240,0.8);font-size:13px;">${stat1}</div>
-                <div id="ap-stat2" style="color:#22c55e;font-size:12px;font-weight:700;margin-top:3px;">${stat2}</div>
+                <div style="color:rgba(180,200,240,0.8);font-size:13px;">${stat1}</div>
+                <div style="color:#22c55e;font-size:12px;font-weight:700;margin-top:3px;">${stat2}</div>
             </div>
             <div style="background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:12px;margin-bottom:12px;">
                 <div style="font-family:'Orbitron',monospace;font-size:9px;letter-spacing:2px;color:rgba(150,170,220,0.6);margin-bottom:6px;">UPGRADE COST</div>
-                <span id="ap-cost-val" style="font-family:'Orbitron',monospace;font-size:14px;color:#fbbf24;font-weight:700;">🪙 ${cCost}</span>
+                <span style="font-family:'Orbitron',monospace;font-size:14px;color:#fbbf24;font-weight:700;">🪙 ${cCost}</span>
             </div>
-            <button onclick="doUpgrade()" class="upgrade-btn${canAfford ? '' : ' disabled'}">UPGRADE → LV.${dispLvl + 1}</button>`;
+            <button onclick="doUpgrade()" class="upgrade-btn${canAfford ? '' : ' disabled'}">UPGRADE → LV.${lvl + 1}</button>`;
                 }
             }
         }
 
         window.doBuild = function (type) {
             if (!selectedTile || selectedTile.type !== 'empty') return;
-            // Optimistic close immediately — feels instant
-            document.getElementById('action-panel').style.display = 'none';
-            const tile = selectedTile; selectedTile = null;
-            socket.emit('player_build', { tileX: tile.x, tileY: tile.y, buildType: type }, (res) => {
-                if (!res?.ok) {
-                    addFT(camX, camY - 60, res?.reason || 'Cannot build', '#ef4444');
-                }
+            socket.emit('player_build', { tileX: selectedTile.x, tileY: selectedTile.y, buildType: type }, (res) => {
+                if (res?.ok) { document.getElementById('action-panel').style.display = 'none'; selectedTile = null; }
+                else addFT(MAP_W / 2 * TILE_SIZE, MAP_H / 2 * TILE_SIZE, res?.reason || 'Cannot build', '#ef4444');
             });
         };
 
         window.doUpgrade = function () {
             if (!selectedTile || selectedTile.type === 'empty') return;
-            const tile = selectedTile;
-            socket.emit('player_upgrade', { type: tile.type, tileX: tile.x, tileY: tile.y }, (res) => {
-                if (res?.ok) {
-                    if (res.updatedObj) tile.obj = res.updatedObj;
-                    selectedTile = tile;
-                    openActionPanel(tile); // full rebuild after confirmed upgrade
-                }
+            socket.emit('player_upgrade', { type: selectedTile.type, tileX: selectedTile.x, tileY: selectedTile.y }, (res) => {
+                if (res?.ok) openActionPanel(selectedTile); // refresh
             });
         };
 
-        // Targeted in-place refresh — updates stat text, cost, and button affordability
-        // WITHOUT destroying the panel DOM (avoids killing click events between ticks)
-        function _refreshPanelStats(tileInfo, me) {
-            if (!tileInfo || tileInfo.type === 'empty') return;
-            const obj = tileInfo.obj; if (!obj) return;
-            const lvl = obj.level;
-
-            // Compute fresh stat1 / stat2 / cCost exactly as openActionPanel does
-            let stat1 = '', stat2 = '', cCost = 0;
-            if (tileInfo.type === 'bed') {
-                stat1 = `+${BED_INCOME[lvl] ?? 1} 🪙/s`;
-                if (lvl < BED_COSTS.length) { stat2 = `→ +${BED_INCOME[lvl + 1]} 🪙/s`; cCost = BED_COSTS[lvl]; }
-            } else if (tileInfo.type === 'door') {
-                stat1 = `Max HP: ${(DOOR_HPS[lvl] || 0).toLocaleString()}`;
-                if (lvl < DOOR_COSTS.length) { stat2 = `→ Max HP: ${DOOR_HPS[lvl + 1].toLocaleString()}`; cCost = DOOR_COSTS[lvl]; }
-            } else if (tileInfo.type === 'turret') {
-                stat1 = `Dmg: ${TURRET_DMG[lvl - 1]} · Rng: ${TURRET_RNG[lvl - 1]}`;
-                if (lvl < TURRET_COSTS.length) { stat2 = `→ Dmg: ${TURRET_DMG[lvl]}`; cCost = TURRET_COSTS[lvl]; }
-            } else if (tileInfo.type === 'generator') {
-                stat1 = `+${GEN_INCOME[lvl - 1]} ⚡/s`;
-                if (lvl < GEN_COSTS.length) { stat2 = `→ +${GEN_INCOME[lvl]} ⚡/s`; cCost = GEN_COSTS[lvl]; }
-            } else if (tileInfo.type === 'mine') {
-                const cfg = { copper: { income: MINE_INCOME.copper }, silver: { income: MINE_INCOME.silver }, gold: { income: MINE_INCOME.gold } }[obj.type];
-                const mineCosts = { copper: [40, 100, 250, 600, 1200, 2500], silver: [120, 300, 750, 1800, 3500, 7000], gold: [300, 750, 1800, 4000, 8000, 16000] };
-                stat1 = `+${cfg.income[lvl - 1] ?? 0} 🪙/s`;
-                if (lvl < (mineCosts[obj.type] || []).length) { stat2 = `→ +${cfg.income[lvl]} 🪙/s`; cCost = (mineCosts[obj.type] || [])[lvl] || 0; }
-            }
-
-            const canAfford = cCost > 0 && me.coins >= cCost;
-            const isMax = !cCost;
-            const dispLvl = (tileInfo.type === 'bed' || tileInfo.type === 'door') ? lvl + 1 : lvl;
-
-            // Update stat lines if they exist in DOM
-            const s1el = document.getElementById('ap-stat1'); if (s1el) s1el.textContent = stat1;
-            const s2el = document.getElementById('ap-stat2'); if (s2el) s2el.textContent = stat2;
-            const cEl = document.getElementById('ap-cost-val'); if (cEl) cEl.textContent = isMax ? 'MAX' : `🪙 ${cCost}`;
-            const btn = document.querySelector('#action-panel .upgrade-btn');
-            if (btn) {
-                document.getElementById('ap-title').textContent = `${tileInfo.type[0].toUpperCase() + tileInfo.type.slice(1)} Lv.${dispLvl}`;
-                btn.textContent = isMax ? 'MAX LEVEL' : `UPGRADE → LV.${dispLvl + 1}`;
-                btn.className = 'upgrade-btn' + (canAfford && !isMax ? '' : ' disabled');
-                btn.onclick = canAfford && !isMax ? () => doUpgrade() : null;
-            }
-        }
-
         document.getElementById('ap-close').onclick = () => { document.getElementById('action-panel').style.display = 'none'; selectedTile = null; };
 
-        // Shared handler for both click and touch-tap on canvas
-        function handleCanvasTap(clientX, clientY) {
+        // Canvas click → open build/upgrade
+        canvas.addEventListener('click', e => {
             const me = gameState?.players?.[socket.id];
             if (!me || me.state !== 'SLEEPING' || me.room === null) return;
             const r = rooms[me.room];
             if (!r) return;
             const dcx = Math.max(0, Math.min(camX - W / 2, MAP_W * TILE_SIZE - W));
             const dcy = Math.max(0, Math.min(camY - H / 2, MAP_H * TILE_SIZE - H));
-            const wx = clientX + dcx, wy = clientY + dcy;
+            const wx = e.clientX + dcx, wy = e.clientY + dcy;
             const tx = Math.floor(wx / TILE_SIZE), ty = Math.floor(wy / TILE_SIZE);
             if ((tx >= r.x && tx < r.x + r.w && ty >= r.y && ty < r.y + r.h) || (tx === r.door.x && ty === r.door.y)) {
                 const ti = { roomIdx: me.room, x: tx, y: ty, type: 'empty', obj: null };
@@ -2323,38 +3200,15 @@
                     const tur = r.turrets.find(t => t.x === tx && t.y === ty);
                     const gen = r.generators.find(t => t.x === tx && t.y === ty);
                     const mine = r.mines.find(t => t.x === tx && t.y === ty);
-                    const grenade = (r.grenades || []).find(t => t.x === tx && t.y === ty);
-                    const shield = (r.shields || []).find(t => t.x === tx && t.y === ty);
                     if (tur) { ti.type = 'turret'; ti.obj = tur; }
                     else if (gen) { ti.type = 'generator'; ti.obj = gen; }
                     else if (mine) { ti.type = 'mine'; ti.obj = mine; }
-                    else if (grenade) { ti.type = 'grenade'; ti.obj = grenade; }
-                    else if (shield) { ti.type = 'shield'; ti.obj = shield; }
                 }
                 openActionPanel(ti);
             } else {
                 document.getElementById('action-panel').style.display = 'none'; selectedTile = null;
             }
-        }
-
-        // Canvas click → open build/upgrade (desktop)
-        canvas.addEventListener('click', e => handleCanvasTap(e.clientX, e.clientY));
-
-        // Canvas touch tap → open build/upgrade (mobile)
-        let _tapStart = { x: 0, y: 0, t: 0 };
-        canvas.addEventListener('touchstart', e => {
-            const t = e.changedTouches[0];
-            _tapStart = { x: t.clientX, y: t.clientY, t: Date.now() };
-        }, { passive: true });
-        canvas.addEventListener('touchend', e => {
-            const t = e.changedTouches[0];
-            const dx = t.clientX - _tapStart.x, dy = t.clientY - _tapStart.y;
-            const moved = Math.sqrt(dx * dx + dy * dy);
-            // Only fire if finger barely moved (tap, not swipe/pan) and quick
-            if (moved < 12 && Date.now() - _tapStart.t < 300) {
-                handleCanvasTap(t.clientX, t.clientY);
-            }
-        }, { passive: true });
+        });
 
         // ── PLAYER LIST UI ───────────────────────────────────────────────
         function buildPlayerListUI(players) {
@@ -2450,26 +3304,11 @@
         }
 
         // ── GHOST ABILITY ─────────────────────────────────────────────────
-        // Survivor uses purchased grenade launcher — fires at ghost
-        window.survivorUseGrenade = function () {
-            socket.emit('player_use_grenade', (res) => {
-                if (res?.ok) {
-                    addFT(camX, camY - 80, `💣 GRENADE! -${res.dmg}hp`, '#f97316');
-                    document.getElementById('sh-grenade').classList.add('hidden');
-                } else {
-                    addFT(camX, camY - 60, 'Ghost not in range!', '#ef4444');
-                }
-            });
-        };
-
-        // Survivor uses purchased ghost net — stuns ghost 3s
-        window.survivorUseNet = function () {
+        window.ghostUseNet = function () {
             socket.emit('player_use_net', (res) => {
-                if (res?.ok) {
-                    addFT(camX, camY - 80, '🕸️ GHOST NETTED! 3s stun', '#a3e635');
-                    document.getElementById('sh-net').classList.add('hidden');
-                } else {
-                    addFT(camX, camY - 60, 'Cannot use net now', '#ef4444');
+                if (!res?.ok) {
+                    const btn = document.getElementById('ga-net');
+                    btn.classList.add('disabled');
                 }
             });
         };
@@ -2494,7 +3333,6 @@
             // particles + floatingTexts age
             for (let i = particles.length - 1; i >= 0; i--) { let p = particles[i]; p.x += p.vx; p.y += p.vy; p.life -= dt; if (p.life <= 0) particles.splice(i, 1); }
             for (let i = floatingTexts.length - 1; i >= 0; i--) { floatingTexts[i].life -= dt; if (floatingTexts[i].life <= 0) floatingTexts.splice(i, 1); }
-            for (let i = turretShots.length - 1; i >= 0; i--) { turretShots[i].life -= dt; if (turretShots[i].life <= 0) turretShots.splice(i, 1); }
 
             draw();
             drawMinimap();
@@ -2594,86 +3432,21 @@
                     const cx = t.x * TILE_SIZE + TILE_SIZE / 2, cy = t.y * TILE_SIZE + TILE_SIZE / 2;
                     const tColor = TIER_COLORS[t.level] || '#ef4444';
                     const br = 10 + Math.min(t.level, 12) * 0.6;
-                    // Check if this turret just fired (has a fresh shot)
-                    const justFired = turretShots.some(s => Math.abs(s.sx - cx) < 2 && Math.abs(s.sy - cy) < 2);
-                    // Base plate
                     ctx.fillStyle = MAT_COLORS[t.level] || '#334155'; ctx.beginPath(); ctx.arc(cx, cy, br, 0, Math.PI * 2); ctx.fill();
                     ctx.strokeStyle = tColor; ctx.lineWidth = 2; ctx.stroke();
-                    ctx.save(); ctx.translate(cx, cy);
-                    const recoil = justFired ? -4 : 0;
-                    ctx.rotate(t.angle || 0);
-                    const bl = 12 + t.level * 1.5 + recoil, bw = 4 + Math.floor(t.level / 3) * 1.5;
-                    // Barrel shadow
-                    ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(3, -bw / 2 + 1, bl, bw);
-                    // Barrel
-                    ctx.fillStyle = '#cbd5e1'; ctx.fillRect(2 + recoil, -bw / 2, bl, bw);
-                    // Barrel stripe
-                    ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(2 + recoil + bl * 0.6, -bw / 2, bl * 0.12, bw);
-                    // Muzzle tip
-                    ctx.fillStyle = justFired ? '#fef08a' : tColor;
-                    ctx.fillRect(2 + recoil + bl - 2, -bw / 2 - 1, 4, bw + 2);
-                    // Center hub
+                    ctx.save(); ctx.translate(cx, cy); ctx.rotate(t.angle || 0);
+                    const bl = 12 + t.level * 1.5, bw = 4 + Math.floor(t.level / 3) * 1.5;
+                    ctx.fillStyle = '#cbd5e1'; ctx.fillRect(2, -bw / 2, bl, bw);
                     ctx.fillStyle = tColor; ctx.beginPath(); ctx.arc(0, 0, br * .7, 0, Math.PI * 2); ctx.fill();
-                    ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.arc(0, 0, br * .35, 0, Math.PI * 2); ctx.fill();
                     ctx.restore();
-                    // Muzzle flash on shot
-                    if (justFired) {
-                        const mx = cx + Math.cos(t.angle || 0) * (bl + 8), my = cy + Math.sin(t.angle || 0) * (bl + 8);
-                        const flash = ctx.createRadialGradient(mx, my, 0, mx, my, 12);
-                        flash.addColorStop(0, 'rgba(255,240,100,0.9)');
-                        flash.addColorStop(0.4, 'rgba(255,140,0,0.6)');
-                        flash.addColorStop(1, 'rgba(255,100,0,0)');
-                        ctx.fillStyle = flash; ctx.beginPath(); ctx.arc(mx, my, 14, 0, Math.PI * 2); ctx.fill();
-                    }
                     ctx.fillStyle = '#fff'; ctx.font = 'bold 9px Arial'; ctx.textAlign = 'center'; ctx.fillText(`Lv${t.level}`, cx, cy - br - 5);
                 }
 
-                // TURRET SHOTS — tracer lines drawn in world space (after all rooms)
-                // (drawn in the shots pass below)
-
-                // GRENADE LAUNCHERS (tile-placed)
-                for (const gn of (r.grenades || [])) {
-                    const gx = gn.x * TILE_SIZE, gy = gn.y * TILE_SIZE;
-                    ctx.fillStyle = '#1c1917'; ctx.fillRect(gx + 3, gy + 3, TILE_SIZE - 6, TILE_SIZE - 6);
-                    ctx.fillStyle = '#f97316';
-                    // Barrel
-                    ctx.fillRect(gx + 10, gy + TILE_SIZE / 2 - 3, TILE_SIZE - 14, 6);
-                    // Body
-                    ctx.fillRect(gx + 8, gy + TILE_SIZE / 2 - 8, 14, 16);
-                    // Pulse glow
-                    const gPulse = 0.4 + Math.abs(Math.sin(Date.now() / 350 + gn.x)) * 0.5;
-                    ctx.strokeStyle = `rgba(249,115,22,${gPulse})`; ctx.lineWidth = 2;
-                    ctx.strokeRect(gx + 3, gy + 3, TILE_SIZE - 6, TILE_SIZE - 6);
-                    ctx.fillStyle = '#fff'; ctx.font = 'bold 9px Arial'; ctx.textAlign = 'center';
-                    ctx.fillText('💣', gx + TILE_SIZE / 2, gy + TILE_SIZE / 2 + 4);
-                    ctx.font = 'bold 8px Arial'; ctx.fillStyle = '#fed7aa';
-                    ctx.fillText('BOMB', gx + TILE_SIZE / 2, gy + TILE_SIZE - 5);
-                }
-
-                // DOOR SHIELDS (tile-placed)
-                for (const sh of (r.shields || [])) {
-                    const shx = sh.x * TILE_SIZE, shy = sh.y * TILE_SIZE;
-                    ctx.fillStyle = '#172554'; ctx.fillRect(shx + 3, shy + 3, TILE_SIZE - 6, TILE_SIZE - 6);
-                    // Shield shape
-                    const pulse = 0.4 + Math.abs(Math.sin(Date.now() / 300 + sh.x)) * 0.6;
-                    ctx.fillStyle = `rgba(96,165,250,${0.5 + pulse * 0.4})`;
-                    ctx.beginPath();
-                    ctx.moveTo(shx + TILE_SIZE / 2, shy + 8);
-                    ctx.lineTo(shx + TILE_SIZE - 8, shy + 14);
-                    ctx.lineTo(shx + TILE_SIZE - 8, shy + 28);
-                    ctx.lineTo(shx + TILE_SIZE / 2, shy + TILE_SIZE - 7);
-                    ctx.lineTo(shx + 8, shy + 28);
-                    ctx.lineTo(shx + 8, shy + 14);
-                    ctx.closePath(); ctx.fill();
-                    ctx.strokeStyle = `rgba(147,197,253,${pulse})`; ctx.lineWidth = 1.5; ctx.stroke();
-                    ctx.fillStyle = '#fff'; ctx.font = 'bold 9px Arial'; ctx.textAlign = 'center';
-                    ctx.fillText('SHIELD', shx + TILE_SIZE / 2, shy + TILE_SIZE - 5);
-                }
-
-                // Tool indicators (ghost net / repair tool — no tile) — top left of room
+                // Tool indicators
                 let tiY = ry - 18;
-                if (r._hasGhostNet) { ctx.font = '12px Arial'; ctx.textAlign = 'left'; ctx.fillText('🕸️', rx + 3, tiY + 12); tiY += 18; }
-                if (r._hasRepairTool) { ctx.fillText('🔩', rx + 3, tiY + 12); }
+                if (r._hasGrenadeLauncher) { ctx.font = '12px Arial'; ctx.textAlign = 'left'; ctx.fillText('💣', rx + 3, tiY + 12); tiY += 18; }
+                if (r._hasGhostNet) { ctx.fillText('🕸️', rx + 3, tiY + 12); tiY += 18; }
+                if (r._hasShield) { ctx.fillText('🛡️', rx + 3, tiY + 12); }
 
                 // DOOR
                 const ddx = r.door.x * TILE_SIZE, ddy = r.door.y * TILE_SIZE;
@@ -2729,43 +3502,10 @@
                 }
             }
 
-            // HEAL SPOTS — glowing green shrines at map edges
-            for (const spot of healSpots) {
-                const sx = spot.x * TILE_SIZE, sy = spot.y * TILE_SIZE;
-                const cx = sx + TILE_SIZE / 2, cy = sy + TILE_SIZE / 2;
-                const pulse = 0.5 + Math.abs(Math.sin(Date.now() / 400)) * 0.5;
-                // Outer glow
-                const grd = ctx.createRadialGradient(cx, cy, 4, cx, cy, TILE_SIZE * 1.1);
-                grd.addColorStop(0, `rgba(74,222,128,${0.3 + pulse * 0.35})`);
-                grd.addColorStop(1, 'rgba(0,0,0,0)');
-                ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(cx, cy, TILE_SIZE * 1.1, 0, Math.PI * 2); ctx.fill();
-                // Cross / plus icon
-                ctx.fillStyle = `rgba(74,222,128,${0.6 + pulse * 0.4})`;
-                ctx.fillRect(cx - 3, cy - 14, 6, 28); ctx.fillRect(cx - 14, cy - 3, 28, 6);
-                // Label
-                ctx.font = 'bold 9px Orbitron,monospace'; ctx.textAlign = 'center'; ctx.fillStyle = '#86efac';
-                ctx.fillText('HEAL', cx, cy + 22);
-            }
-
             // PLAYERS
             for (const p of Object.values(gameState.players)) {
                 if (p.state === 'DEAD') continue;
                 drawEntity(p);
-            }
-
-            // TURRET TRACER SHOTS
-            for (const s of turretShots) {
-                const frac = s.life / s.maxLife;
-                // Tracer line fades out
-                ctx.globalAlpha = frac * 0.85;
-                ctx.strokeStyle = `rgba(255,220,50,${frac})`;
-                ctx.lineWidth = 2.5;
-                ctx.beginPath(); ctx.moveTo(s.sx, s.sy); ctx.lineTo(s.ex, s.ey); ctx.stroke();
-                // Bright core line
-                ctx.strokeStyle = `rgba(255,255,200,${frac * 0.7})`;
-                ctx.lineWidth = 1;
-                ctx.beginPath(); ctx.moveTo(s.sx, s.sy); ctx.lineTo(s.ex, s.ey); ctx.stroke();
-                ctx.globalAlpha = 1;
             }
 
             // PARTICLES
@@ -2796,8 +3536,8 @@
                 vign.addColorStop(1, 'rgba(180,0,0,0.35)');
                 ctx.fillStyle = vign; ctx.fillRect(0, 0, W, H);
                 // Ghost state badge
-                const stateLabels = { WAITING: '❄ FROZEN', HEALING: '💚 HEALING', HUNTING: '👁 HUNTING', APPROACHING_DOOR: '🏃 APPROACHING', ATTACKING: '💥 ATTACKING DOOR', CROSSING: '🌀 ENTERING', INSIDE: '🩸 INSIDE' };
-                const stateColors = { WAITING: '#7dd3fc', HEALING: '#86efac', HUNTING: '#fbbf24', APPROACHING_DOOR: '#fb923c', ATTACKING: '#ef4444', CROSSING: '#a855f7', INSIDE: '#dc2626' };
+                const stateLabels = { WAITING: '❄ FROZEN', HUNTING: '👁 HUNTING', APPROACHING_DOOR: '🏃 APPROACHING', ATTACKING: '💥 ATTACKING DOOR', CROSSING: '🌀 ENTERING', INSIDE: '🩸 INSIDE' };
+                const stateColors = { WAITING: '#7dd3fc', HUNTING: '#fbbf24', APPROACHING_DOOR: '#fb923c', ATTACKING: '#ef4444', CROSSING: '#a855f7', INSIDE: '#dc2626' };
                 const sLabel = stateLabels[myData.ghostState] || myData.ghostState;
                 const sColor = stateColors[myData.ghostState] || '#fff';
                 ctx.font = 'bold 13px Orbitron,monospace'; ctx.textAlign = 'center';
@@ -2844,10 +3584,9 @@
                     ctx.fillText(`❄ ${Math.ceil(gameState.ghostTimer)}s`, 0, -38);
                 }
 
-                // Ghost glow — green when healing, red otherwise
-                const isHealing = (p.ghostState === 'HEALING');
+                // Ghost glow
                 const glow = ctx.createRadialGradient(0, 0, 10, 0, 0, 40);
-                glow.addColorStop(0, isFrozen ? 'rgba(100,180,255,0.4)' : isHealing ? 'rgba(74,222,128,0.7)' : 'rgba(239,68,68,0.6)');
+                glow.addColorStop(0, isFrozen ? 'rgba(100,180,255,0.4)' : 'rgba(239,68,68,0.6)');
                 glow.addColorStop(1, 'rgba(0,0,0,0)');
                 ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(0, 0, 40, 0, Math.PI * 2); ctx.fill();
 
