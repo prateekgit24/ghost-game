@@ -1461,7 +1461,12 @@
         window.addEventListener('resize', () => { W = window.innerWidth; H = window.innerHeight; canvas.width = W; canvas.height = H; });
 
         // ── SOCKET ───────────────────────────────────────────────────────
-        const socket = io();
+        // const socket = io();
+        // above one is for local host
+        // Replace the URL with your actual Render Backend URL (ends in .onrender.com)
+        const socket = io("https://ghost-game-g417.onrender.com", {
+            transports: ["websocket"] // High performance for games
+        });
 
         // ── LOCAL STATE ──────────────────────────────────────────────────
         let myId = null, myName = '', myRoomId = '', isHost = false;
